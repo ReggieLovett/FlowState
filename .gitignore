@@ -32,3 +32,4 @@ yarn-error.log*
 # archived earlier implementations (kept locally, not deployed)
 /legacy-vue
 /legacy-tailwind
+.env*
