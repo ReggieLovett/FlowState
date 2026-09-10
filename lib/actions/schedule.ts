@@ -1,0 +1,152 @@
+'use server'
+
+import { revalidatePath } from 'next/cache'
+import { z } from 'zod'
+import { createEvent, deleteEvent, updateEvent } from '@/lib/data/schedule'
+import { CATEGORY_ORDER } from '@/lib/categories'
+import type { Category } from '@prisma/client'
+
+/**
+ * Server Actions for schedule events.
+ *
+ * None of these takes a `userId`. The data layer derives it from the session, so
+ * a crafted form post cannot address another user's rows. Ownership is enforced
+ * again in the database by the compound `id_userId` selector.
+ */
+
+export interface ActionState {
+  error?: string
+  ok?: boolean
+}
+
+// Typed as the Prisma enum, so a parsed value flows into EventInput without a cast.
+const categoryEnum = z.enum(CATEGORY_ORDER as [Category, ...Category[]])
+
+const eventSchema = z
+  .object({
+    title: z.string().trim().min(1, 'Give the event a title.').max(200),
+    category: categoryEnum,
+    subjectId: z.string().trim().optional(),
+    date: z.string().min(1, 'Pick a date.'),
+    startTime: z.string().min(1, 'Pick a start time.'),
+    endTime: z.string().min(1, 'Pick an end time.'),
+    location: z.string().trim().max(200).optional(),
+    notes: z.string().trim().max(2000).optional(),
+    isAllDay: z.boolean().optional(),
+  })
+  .refine((v) => v.isAllDay || v.endTime > v.startTime, {
+    message: 'End time must be after the start time.',
+    path: ['endTime'],
+  })
+
+/** Combines the date and time inputs into a Date in the server's timezone. */
+function combine(date: string, time: string): Date {
+  return new Date(`${date}T${time}:00`)
+}
+
+function parseForm(formData: FormData) {
+  return eventSchema.safeParse({
+    title: formData.get('title'),
+    category: formData.get('category'),
+    subjectId: formData.get('subjectId') ?? undefined,
+    date: formData.get('date'),
+    startTime: formData.get('startTime'),
+    endTime: formData.get('endTime'),
+    location: formData.get('location') ?? undefined,
+    notes: formData.get('notes') ?? undefined,
+    isAllDay: formData.get('isAllDay') === 'on',
+  })
+}
+
+export async function createEventAction(
+  _previous: ActionState,
+  formData: FormData,
+): Promise<ActionState> {
+  const parsed = parseForm(formData)
+  if (!parsed.success) {
+    return { error: parsed.error.issues[0]?.message ?? 'Check the form.' }
+  }
+
+  const v = parsed.data
+
+  try {
+    await createEvent({
+      title: v.title,
+      category: v.category,
+      subjectId: v.subjectId ? v.subjectId : null,
+      startsAt: v.isAllDay ? combine(v.date, '00:00') : combine(v.date, v.startTime),
+      endsAt: v.isAllDay ? combine(v.date, '23:59') : combine(v.date, v.endTime),
+      isAllDay: v.isAllDay ?? false,
+      location: v.location || null,
+      notes: v.notes || null,
+    })
+  } catch (error) {
+    if (error instanceof Error && error.message === 'Subject not found') {
+      return { error: 'That subject is no longer available.' }
+    }
+    throw error
+  }
+
+  revalidatePath('/dashboard')
+  revalidatePath('/dashboard/schedule')
+  return { ok: true }
+}
+
+export async function updateEventAction(
+  _previous: ActionState,
+  formData: FormData,
+): Promise<ActionState> {
+  const id = String(formData.get('id') ?? '')
+  if (!id) return { error: 'Missing event.' }
+
+  const parsed = parseForm(formData)
+  if (!parsed.success) {
+    return { error: parsed.error.issues[0]?.message ?? 'Check the form.' }
+  }
+
+  const v = parsed.data
+
+  try {
+    await updateEvent(id, {
+      title: v.title,
+      category: v.category,
+      subjectId: v.subjectId ? v.subjectId : null,
+      startsAt: v.isAllDay ? combine(v.date, '00:00') : combine(v.date, v.startTime),
+      endsAt: v.isAllDay ? combine(v.date, '23:59') : combine(v.date, v.endTime),
+      isAllDay: v.isAllDay ?? false,
+      location: v.location || null,
+      notes: v.notes || null,
+    })
+  } catch (error) {
+    if (error instanceof Error && error.message === 'Subject not found') {
+      return { error: 'That subject is no longer available.' }
+    }
+    // A row belonging to someone else matches nothing and Prisma throws.
+    return { error: 'Could not update that event.' }
+  }
+
+  revalidatePath('/dashboard')
+  revalidatePath('/dashboard/schedule')
+  return { ok: true }
+}
+
+export async function deleteEventAction(formData: FormData): Promise<void> {
+  const id = String(formData.get('id') ?? '')
+  if (id) await deleteEvent(id)
+
+  revalidatePath('/dashboard')
+  revalidatePath('/dashboard/schedule')
+}
+
+const statusSchema = z.enum(['SCHEDULED', 'COMPLETED', 'CANCELLED'])
+
+export async function setEventStatusAction(formData: FormData): Promise<void> {
+  const id = String(formData.get('id') ?? '')
+  const parsed = statusSchema.safeParse(formData.get('status'))
+  if (!id || !parsed.success) return
+
+  await updateEvent(id, { status: parsed.data })
+
+  revalidatePath('/dashboard')
+  revalidatePath('/dashboard/schedule')
+}

@@ -1,0 +1,219 @@
+/**
+ * Theme layer on top of Bootstrap 5.3.
+ *
+ * Bootstrap is imported first in layout.tsx; everything here overrides its CSS
+ * custom properties rather than restyling components, so utilities, dark mode
+ * and future Bootstrap updates keep working.
+ *
+ * Dark mode is Bootstrap's own `data-bs-theme` attribute, set before paint by
+ * the inline script in app/layout.tsx.
+ */
+
+:root,
+[data-bs-theme='light'] {
+  --bs-primary: #1f6f54;
+  --bs-primary-rgb: 31, 111, 84;
+  --bs-primary-text-emphasis: #144836;
+  --bs-primary-bg-subtle: #e4f1ec;
+  --bs-primary-border-subtle: #b5d8cb;
+
+  --bs-body-bg: #fbfaf8;
+  --bs-body-color: #1f2320;
+  --bs-secondary-color: rgba(31, 35, 32, 0.68);
+  --bs-tertiary-color: rgba(31, 35, 32, 0.66);
+  --bs-border-color: #e3e0da;
+  --bs-secondary-bg: #f2efe9;
+  --bs-tertiary-bg: #f7f5f1;
+
+  --bs-body-font-family: var(--font-app), system-ui, -apple-system, 'Segoe UI', sans-serif;
+  --bs-border-radius: 0.625rem;
+  --bs-border-radius-sm: 0.5rem;
+  --bs-border-radius-lg: 0.875rem;
+
+  --bs-link-color: var(--bs-primary);
+  --bs-link-hover-color: #144836;
+
+  --app-shadow: 0 1px 2px rgba(31, 35, 32, 0.04), 0 6px 16px -8px rgba(31, 35, 32, 0.08);
+  --app-sidebar-bg: #f5f3ef;
+}
+
+[data-bs-theme='dark'] {
+  --bs-primary: #4fbf95;
+  --bs-primary-rgb: 79, 191, 149;
+  --bs-primary-text-emphasis: #7fd4b3;
+  --bs-primary-bg-subtle: #16302a;
+  --bs-primary-border-subtle: #245244;
+
+  --bs-body-bg: #16181a;
+  --bs-body-color: #ecedee;
+  --bs-secondary-color: rgba(236, 237, 238, 0.72);
+  --bs-tertiary-color: rgba(236, 237, 238, 0.55);
+  --bs-border-color: #33383c;
+  --bs-secondary-bg: #202426;
+  --bs-tertiary-bg: #1b1e20;
+
+  --bs-link-color: var(--bs-primary);
+  --bs-link-hover-color: #7fd4b3;
+
+  --app-shadow: 0 1px 2px rgba(0, 0, 0, 0.3), 0 8px 24px -10px rgba(0, 0, 0, 0.5);
+  --app-sidebar-bg: #1b1e20;
+}
+
+body {
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* Bootstrap derives .btn-primary's text colour at build time from its default
+   blue, so a darker primary needs the contrast restated. */
+.btn-primary {
+  --bs-btn-color: #fff;
+  --bs-btn-bg: var(--bs-primary);
+  --bs-btn-border-color: var(--bs-primary);
+  --bs-btn-hover-color: #fff;
+  --bs-btn-hover-bg: #195a44;
+  --bs-btn-hover-border-color: #195a44;
+  --bs-btn-active-bg: #144836;
+  --bs-btn-active-border-color: #144836;
+  --bs-btn-disabled-bg: var(--bs-primary);
+  --bs-btn-disabled-border-color: var(--bs-primary);
+}
+
+[data-bs-theme='dark'] .btn-primary {
+  --bs-btn-color: #10231d;
+  --bs-btn-hover-color: #10231d;
+  --bs-btn-hover-bg: #6fd0aa;
+  --bs-btn-hover-border-color: #6fd0aa;
+  --bs-btn-active-color: #10231d;
+  --bs-btn-active-bg: #7fd4b3;
+  --bs-btn-active-border-color: #7fd4b3;
+}
+
+.card {
+  --bs-card-bg: var(--bs-body-bg);
+  --bs-card-border-color: var(--bs-border-color);
+  box-shadow: var(--app-shadow);
+}
+
+[data-bs-theme='dark'] .card {
+  --bs-card-bg: var(--bs-secondary-bg);
+}
+
+/* Neutral chip.
+   Bootstrap's .text-bg-light is a fixed light background with black text, so it
+   stays white in dark mode. These tokens follow the theme. */
+.chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  padding: 0.15rem 0.45rem;
+  border: 1px solid var(--bs-border-color);
+  border-radius: 0.375rem;
+  background: var(--bs-tertiary-bg);
+  color: var(--bs-secondary-color);
+  font-size: 0.75rem;
+  font-weight: 500;
+  line-height: 1.35;
+  white-space: nowrap;
+}
+
+/* .text-bg-primary hard-codes white text, which fails against the bright mint
+   used as the dark-mode primary. */
+[data-bs-theme='dark'] .text-bg-primary {
+  color: #10231d !important;
+}
+
+/* Bootstrap has no min-width utility, and a flex child needs min-width: 0 or its
+   content refuses to shrink and text-truncate never engages. */
+.min-width-0 {
+  min-width: 0;
+}
+
+/* Tabular figures keep times and counts from reflowing as they change. */
+.tnum {
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: 'tnum';
+}
+
+.app-sidebar {
+  background: var(--app-sidebar-bg);
+  border-right: 1px solid var(--bs-border-color);
+}
+
+@media (min-width: 992px) {
+  .app-sidebar {
+    position: sticky;
+    top: 0;
+    height: 100dvh;
+  }
+}
+
+.app-nav-link {
+  display: flex;
+  align-items: center;
+  gap: 0.625rem;
+  padding: 0.5rem 0.75rem;
+  border-radius: var(--bs-border-radius);
+  color: var(--bs-secondary-color);
+  font-size: 0.9375rem;
+  font-weight: 500;
+  text-decoration: none;
+  transition: background-color 0.15s ease, color 0.15s ease;
+}
+
+.app-nav-link:hover {
+  background: var(--bs-tertiary-bg);
+  color: var(--bs-body-color);
+}
+
+.app-nav-link.active {
+  background: var(--bs-body-bg);
+  color: var(--bs-body-color);
+  box-shadow: var(--app-shadow);
+}
+
+[data-bs-theme='dark'] .app-nav-link.active {
+  background: var(--bs-tertiary-bg);
+}
+
+.app-nav-link.active .app-nav-icon {
+  color: var(--bs-primary);
+}
+
+/* Left edge of an event row, tinted with its subject colour. */
+.event-row {
+  border-left: 3px solid var(--event-color, var(--bs-border-color));
+}
+
+.category-dot {
+  display: inline-block;
+  width: 0.5rem;
+  height: 0.5rem;
+  border-radius: 50%;
+  background: var(--dot-color, var(--bs-secondary-color));
+  flex: 0 0 auto;
+}
+
+.auth-shell {
+  min-height: 100dvh;
+  display: grid;
+  place-items: center;
+  padding: 1.5rem;
+}
+
+/* Bootstrap's focus ring is tied to its default blue. */
+.form-control:focus,
+.form-select:focus,
+.btn:focus-visible {
+  border-color: var(--bs-primary);
+  box-shadow: 0 0 0 0.2rem rgba(var(--bs-primary-rgb), 0.22);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    transition-duration: 0.01ms !important;
+  }
+}

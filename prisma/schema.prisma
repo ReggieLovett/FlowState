@@ -1,0 +1,198 @@
+// Study & Work Scheduler - data model
+//
+// Two ideas drive this schema:
+//
+//   1. Every row a user can reach carries its own `userId`. Nothing is reachable
+//      only by traversing a relation, so a query can never "forget" the tenant.
+//
+//   2. Every user-owned model declares `@@unique([id, userId])`. Prisma's
+//      `update` and `delete` require a unique selector, so with `id` alone the
+//      owner cannot be part of the WHERE clause and ownership has to be checked
+//      in a separate read first. That check is easy to forget and racy. The
+//      compound unique gives you `where: { id_userId: { id, userId } }`, which
+//      puts ownership into the same statement. A mutation for someone else's row
+//      matches nothing and throws, rather than succeeding.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+// Prisma 7 removed `url` / `directUrl` from the datasource block. Migration
+// connection details now live in prisma.config.ts, and the runtime connection is
+// supplied to PrismaClient through a driver adapter (see lib/prisma.ts).
+datasource db {
+  provider = "postgresql"
+}
+
+// ---------------------------------------------------------------------------
+// Auth.js models
+//
+// Shapes are dictated by @auth/prisma-adapter. The only additions are the
+// relations to the domain models and `passwordHash` for credentials sign-in.
+// ---------------------------------------------------------------------------
+
+model User {
+  id            String    @id @default(cuid())
+  name          String?
+  email         String    @unique
+  emailVerified DateTime?
+  image         String?
+
+  // Null for OAuth-only accounts. Never selected outside the authorize callback.
+  passwordHash String?
+
+  accounts Account[]
+  sessions Session[]
+
+  subjects Subject[]
+  events   ScheduleEvent[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model Account {
+  id                       String  @id @default(cuid())
+  userId                   String
+  type                     String
+  provider                 String
+  providerAccountId        String
+  refresh_token            String? @db.Text
+  access_token             String? @db.Text
+  expires_at               Int?
+  token_type               String?
+  scope                    String?
+  id_token                 String? @db.Text
+  session_state            String?
+  refresh_token_expires_in Int?
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([provider, providerAccountId])
+  @@index([userId])
+}
+
+model Session {
+  id           String   @id @default(cuid())
+  sessionToken String   @unique
+  userId       String
+  expires      DateTime
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+}
+
+model VerificationToken {
+  identifier String
+  token      String
+  expires    DateTime
+
+  @@unique([identifier, token])
+}
+
+// ---------------------------------------------------------------------------
+// Domain
+// ---------------------------------------------------------------------------
+
+/// Commitment types for college students and working professionals.
+enum Category {
+  LECTURE
+  SEMINAR
+  LAB_SESSION
+  CLIENT_MEETING
+  PROJECT_DEADLINE
+  DEEP_WORK_SHIFT
+  OTHER
+}
+
+enum EventStatus {
+  SCHEDULED
+  COMPLETED
+  CANCELLED
+}
+
+/// A recurring commitment: a course, a client, or a standing block of focus time.
+/// Seeded defaults are ordinary rows, so the user has full CRUD over them from
+/// the moment the account exists.
+model Subject {
+  id     String @id @default(cuid())
+  userId String
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  name     String
+  category Category
+  /// Course code, client code, or project key. e.g. "CS 4780", "ACME-2"
+  code     String?
+  /// Hex, for the calendar. Stored per subject so palettes survive a redesign.
+  colorHex String  @default("#4C6EF5")
+  notes    String?
+
+  /// Stable identity of a starter template, e.g. "core-lecture". Null for rows
+  /// the user created themselves.
+  ///
+  /// Identity has to be a key rather than the name. "Restore defaults" skips
+  /// templates the user still has, and matching on name means a renamed template
+  /// is treated as missing and silently re-created alongside the rename. A key
+  /// survives renaming, so restore only ever fills genuine gaps.
+  ///
+  /// Purely informational otherwise: nothing branches on it, so seeded rows are
+  /// edited and deleted through the same paths as any other row.
+  seedKey String?
+
+  /// Soft delete. Archiving keeps historical events readable; a hard delete
+  /// detaches them via onDelete: SetNull below.
+  archivedAt DateTime?
+
+  events ScheduleEvent[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  // Ownership as part of the unique selector. See the note at the top.
+  @@unique([id, userId])
+  // One name per user, not globally.
+  @@unique([userId, name])
+  // One copy of each starter template per user. Postgres treats NULLs as
+  // distinct in a unique index, so user-created rows are unaffected.
+  @@unique([userId, seedKey])
+  @@index([userId, archivedAt])
+}
+
+/// A single dated commitment on the calendar.
+model ScheduleEvent {
+  id     String @id @default(cuid())
+  userId String
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  /// Optional: an ad-hoc event need not belong to a subject. Deleting a subject
+  /// detaches its events rather than destroying the history.
+  subjectId String?
+  subject   Subject? @relation(fields: [subjectId], references: [id], onDelete: SetNull)
+
+  title String
+  /// Denormalised from Subject so ad-hoc events are categorised too, and so a
+  /// calendar query does not need the join.
+  category Category
+
+  startsAt DateTime
+  endsAt   DateTime
+  /// All-day items such as a deadline, where the time component is meaningless.
+  isAllDay Boolean @default(false)
+
+  location String?
+  notes    String?
+  status   EventStatus @default(SCHEDULED)
+
+  /// RFC 5545 RRULE for repeats, e.g. "FREQ=WEEKLY;BYDAY=TU,TH".
+  /// Occurrences are expanded at read time rather than stored as rows.
+  recurrenceRule String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([id, userId])
+  // Serves the dominant query: this user's events in a date window.
+  @@index([userId, startsAt])
+  @@index([userId, subjectId])
+}
