@@ -21,7 +21,9 @@ export default defineConfig({
   schema: 'prisma/schema.prisma',
 
   datasource: {
-    url: env('DIRECT_URL'),
+    // Prisma Postgres provides one pooled connection string. Use a separate
+    // direct URL when a provider supplies one, otherwise reuse DATABASE_URL.
+    url: process.env.DIRECT_URL ?? env('DATABASE_URL'),
   },
 
   migrations: {
