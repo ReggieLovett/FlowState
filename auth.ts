@@ -7,7 +7,6 @@ import { z } from 'zod'
 
 import { authConfig } from '@/auth.config'
 import { prisma } from '@/lib/prisma'
-import { seedDefaultSubjects } from '@/lib/data/seed-templates'
 
 /**
  * Full Auth.js configuration. Node runtime only: it touches Prisma and bcrypt.
@@ -70,18 +69,6 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
     }),
   ],
 
-  events: {
-    /**
-     * Fires once, when the adapter creates a user. This is the hook that
-     * satisfies requirement 4 for OAuth sign-ups: the dashboard is populated
-     * before the user ever reaches it. Credentials sign-ups do not go through
-     * the adapter, so app/api/register seeds them in its own transaction.
-     */
-    async createUser({ user }) {
-      if (!user.id) return
-      await seedDefaultSubjects(prisma, user.id)
-    },
-  },
 })
 
 /**

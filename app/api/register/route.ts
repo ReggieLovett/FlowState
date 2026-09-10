@@ -3,18 +3,12 @@ import bcrypt from 'bcryptjs'
 import { z } from 'zod'
 import { Prisma } from '@prisma/client'
 import { prisma } from '@/lib/prisma'
-import { seedDefaultSubjects } from '@/lib/data/seed-templates'
 
 /**
  * Credentials sign-up.
  *
- * OAuth sign-ups are created by the Prisma adapter, so their starter templates
- * are seeded from the `createUser` event in auth.ts. Credentials sign-ups do not
- * pass through the adapter, so they are created and seeded here instead. Both
- * paths end with a populated dashboard, which is requirement 4.
- *
- * The two writes share a transaction: an account must never exist without its
- * templates, and a failed seed must not leave a half-built user behind.
+ * OAuth and credentials sign-ups create only the account. Subjects are created
+ * by the user after sign-in.
  */
 
 export const runtime = 'nodejs'
@@ -47,15 +41,9 @@ export async function POST(request: Request) {
   const passwordHash = await bcrypt.hash(password, 12)
 
   try {
-    const user = await prisma.$transaction(async (tx) => {
-      const created = await tx.user.create({
-        data: { name, email, passwordHash },
-        select: { id: true, email: true, name: true },
-      })
-
-      await seedDefaultSubjects(tx, created.id)
-
-      return created
+    const user = await prisma.user.create({
+      data: { name, email, passwordHash },
+      select: { id: true, email: true, name: true },
     })
 
     return NextResponse.json({ user }, { status: 201 })
