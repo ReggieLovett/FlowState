@@ -1,6 +1,6 @@
 'use client'
 
-import { useActionState, useEffect, useRef } from 'react'
+import { useActionState, useEffect, useRef, useState } from 'react'
 import { useFormStatus } from 'react-dom'
 import { CATEGORY_META, CATEGORY_ORDER } from '@/lib/categories'
 import {
@@ -37,6 +37,7 @@ export function SubjectFormModal({
     INITIAL,
   )
   const dialogRef = useRef<HTMLDialogElement>(null)
+  const [difficulty, setDifficulty] = useState(subject?.difficulty ?? 5)
 
   useEffect(() => {
     const dialog = dialogRef.current
@@ -133,6 +134,43 @@ export function SubjectFormModal({
               defaultValue={subject?.colorHex ?? '#1F6F54'}
               title="Used on the schedule"
             />
+          </div>
+
+          <div className="row g-3 mb-3">
+            <div className="col-12 col-sm-7">
+              <label htmlFor="subject-difficulty" className="form-label small fw-medium">
+                Difficulty ({difficulty}/10)
+              </label>
+              <input
+                id="subject-difficulty"
+                name="difficulty"
+                type="range"
+                className="form-range"
+                min={1}
+                max={10}
+                step={1}
+                value={difficulty}
+                onChange={(e) => setDifficulty(Number(e.target.value))}
+              />
+              <div className="d-flex justify-content-between" style={{ fontSize: '0.7rem' }}>
+                <span className="text-secondary">Easy</span>
+                <span className="text-secondary">Hard</span>
+              </div>
+            </div>
+
+            <div className="col-12 col-sm-5">
+              <label htmlFor="subject-examDate" className="form-label small fw-medium">
+                Exam / deadline
+              </label>
+              <input
+                id="subject-examDate"
+                name="examDate"
+                type="date"
+                className="form-control"
+                defaultValue={subject?.examDate ? new Date(subject.examDate).toISOString().slice(0, 10) : ''}
+              />
+              <div className="form-text">Optional. Drives the smart scheduling priority.</div>
+            </div>
           </div>
 
           <div>

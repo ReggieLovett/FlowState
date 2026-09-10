@@ -16,8 +16,8 @@ const inter = Inter({
 
 export const metadata: Metadata = {
   title: {
-    default: 'Cadence',
-    template: '%s · Cadence',
+    default: 'FlowState',
+    template: '%s · FlowState',
   },
   description:
     'Plan lectures, labs, client meetings and deep work in one schedule. Built for students and working professionals.',

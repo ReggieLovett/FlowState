@@ -1,0 +1,3 @@
+-- AlterTable
+ALTER TABLE "Subject" ADD COLUMN "difficulty" INTEGER NOT NULL DEFAULT 5,
+ADD COLUMN "examDate" TIMESTAMP(3);

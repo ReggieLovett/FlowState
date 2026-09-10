@@ -37,7 +37,7 @@ export default async function DashboardLayout({
           >
             <i className="bi bi-calendar2-week" aria-hidden="true" />
           </span>
-          <span className="fw-semibold text-body">Cadence</span>
+          <span className="fw-semibold text-body">FlowState</span>
         </Link>
 
         <SidebarNav />
@@ -52,7 +52,7 @@ export default async function DashboardLayout({
                 href="/dashboard"
                 className="d-lg-none fw-semibold text-body text-decoration-none"
               >
-                Cadence
+                FlowState
               </Link>
             </div>
 

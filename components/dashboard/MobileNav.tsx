@@ -39,7 +39,7 @@ export function MobileNav() {
             aria-label="Navigation"
           >
             <div className="d-flex justify-content-between align-items-center mb-4">
-              <span className="fw-semibold">Cadence</span>
+              <span className="fw-semibold">FlowState</span>
               <button
                 type="button"
                 className="btn-close"

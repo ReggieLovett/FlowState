@@ -30,6 +30,8 @@ const subjectSchema = z.object({
     .regex(/^#[0-9a-fA-F]{6}$/, 'Pick a colour.')
     .optional(),
   notes: z.string().trim().max(2000).optional(),
+  difficulty: z.coerce.number().int().min(1).max(10).optional(),
+  examDate: z.string().optional(),
 })
 
 function parseForm(formData: FormData) {
@@ -39,6 +41,8 @@ function parseForm(formData: FormData) {
     code: formData.get('code') ?? undefined,
     colorHex: formData.get('colorHex') ?? undefined,
     notes: formData.get('notes') ?? undefined,
+    difficulty: formData.get('difficulty') ?? undefined,
+    examDate: formData.get('examDate') ?? undefined,
   })
 }
 
@@ -58,6 +62,8 @@ export async function createSubjectAction(
       code: parsed.data.code || null,
       colorHex: parsed.data.colorHex,
       notes: parsed.data.notes || null,
+      difficulty: parsed.data.difficulty,
+      examDate: parsed.data.examDate ? new Date(parsed.data.examDate) : null,
     })
   } catch {
     // @@unique([userId, name]) is per-user, so this only ever means the caller
@@ -88,6 +94,8 @@ export async function updateSubjectAction(
       code: parsed.data.code || null,
       colorHex: parsed.data.colorHex,
       notes: parsed.data.notes || null,
+      difficulty: parsed.data.difficulty,
+      examDate: parsed.data.examDate ? new Date(parsed.data.examDate) : undefined,
     })
   } catch {
     return { error: 'Could not save that subject. The name may already be taken.' }

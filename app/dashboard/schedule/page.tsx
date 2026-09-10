@@ -4,6 +4,7 @@ import { listEventsInRange } from '@/lib/data/schedule'
 import { listSubjects } from '@/lib/data/subjects'
 import { EventList } from '@/components/schedule/EventList'
 import { NewEventButton } from '@/components/schedule/NewEventButton'
+import { GenerateScheduleButton } from '@/components/schedule/GenerateScheduleButton'
 import { EmptyState } from '@/components/dashboard/EmptyState'
 import { addDays, formatDay, isSameDay, startOfWeek } from '@/lib/format'
 
@@ -39,6 +40,25 @@ export default async function SchedulePage({
     name: s.name,
     category: s.category,
     colorHex: s.colorHex,
+  }))
+
+  // Serializable data for the smart scheduling preview (client-side engine)
+  const schedulingSubjects = subjects.map((s) => ({
+    id: s.id,
+    name: s.name,
+    category: s.category,
+    colorHex: s.colorHex,
+    difficulty: s.difficulty,
+    examDate: s.examDate?.toISOString() ?? null,
+  }))
+
+  const schedulingEvents = events.map((e) => ({
+    id: e.id,
+    subjectId: e.subject?.id ?? null,
+    startsAt: e.startsAt.toISOString(),
+    endsAt: e.endsAt.toISOString(),
+    isAllDay: e.isAllDay,
+    status: e.status,
   }))
 
   const days = Array.from({ length: 7 }, (_, i) => addDays(weekStart, i))
@@ -114,7 +134,13 @@ export default async function SchedulePage({
                     {formatDay(day)}
                     {today && <span className="badge text-bg-primary ms-2">Today</span>}
                   </h2>
-                  <NewEventButton
+          <GenerateScheduleButton
+            subjects={schedulingSubjects}
+            events={schedulingEvents}
+            weekStartISO={weekStart.toISOString()}
+          />
+
+          <NewEventButton
                     subjects={subjectOptions}
                     defaultDateISO={day.toISOString()}
                     label="Add"

@@ -1,4 +1,4 @@
-# Cadence
+# FlowState
 
 A multi-user scheduling app for college students and working professionals. Plan
 lectures, seminars, lab sessions, client meetings, project deadlines and deep

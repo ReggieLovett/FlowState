@@ -27,7 +27,7 @@ export function AuthCard({
             >
               <i className="bi bi-calendar2-week" aria-hidden="true" />
             </span>
-            <span className="fs-5 fw-semibold text-body">Cadence</span>
+            <span className="fs-5 fw-semibold text-body">FlowState</span>
           </Link>
         </div>
 

@@ -128,6 +128,12 @@ model Subject {
   colorHex String  @default("#4C6EF5")
   notes    String?
 
+  /// 1-10 difficulty rating, feeds the smart scheduling priority score.
+  difficulty Int @default(5)
+  /// Optional exam or deadline date. When set, the scheduling engine weights
+  /// this subject more heavily as the date approaches.
+  examDate   DateTime?
+
   /// Stable identity of a starter template, e.g. "core-lecture". Null for rows
   /// the user created themselves.
   ///

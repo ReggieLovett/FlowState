@@ -21,6 +21,8 @@ const subjectSelect = {
   code: true,
   colorHex: true,
   notes: true,
+  difficulty: true,
+  examDate: true,
   seedKey: true,
   archivedAt: true,
   _count: { select: { events: true } },
@@ -58,6 +60,8 @@ export interface SubjectInput {
   code?: string | null
   colorHex?: string
   notes?: string | null
+  difficulty?: number
+  examDate?: Date | null
 }
 
 export async function createSubject(input: SubjectInput) {
