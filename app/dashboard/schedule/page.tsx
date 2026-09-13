@@ -11,6 +11,9 @@ import { addDays, formatDay, isSameDay, startOfWeek } from '@/lib/format'
 export const metadata: Metadata = { title: 'Schedule' }
 export const dynamic = 'force-dynamic'
 
+/** Longest range the planner offers, in days from the start of the week. */
+const PLANNER_HORIZON_DAYS = 28
+
 /**
  * The week, as seven day sections.
  *
@@ -30,10 +33,20 @@ export default async function SchedulePage({
   const weekStart = addDays(startOfWeek(now), offset * 7)
   const weekEnd = addDays(weekStart, 7)
 
-  const [events, subjects] = await Promise.all([
-    listEventsInRange(weekStart, weekEnd),
+  // The planner offers ranges up to four weeks, and it can only avoid a clash it
+  // can see. Reading the whole horizon in one query costs the same index scan as
+  // reading the visible week, so the week view slices this rather than
+  // re-querying.
+  const horizonEnd = addDays(weekStart, PLANNER_HORIZON_DAYS)
+
+  const [horizonEvents, subjects] = await Promise.all([
+    listEventsInRange(weekStart, horizonEnd),
     listSubjects(),
   ])
+
+  const events = horizonEvents.filter(
+    (event) => event.startsAt < weekEnd && event.endsAt > weekStart,
+  )
 
   const subjectOptions = subjects.map((s) => ({
     id: s.id,
@@ -52,13 +65,14 @@ export default async function SchedulePage({
     examDate: s.examDate?.toISOString() ?? null,
   }))
 
-  const schedulingEvents = events.map((e) => ({
+  const schedulingEvents = horizonEvents.map((e) => ({
     id: e.id,
     subjectId: e.subject?.id ?? null,
     startsAt: e.startsAt.toISOString(),
     endsAt: e.endsAt.toISOString(),
     isAllDay: e.isAllDay,
     status: e.status,
+    isGenerated: e.generatedAt !== null,
   }))
 
   const days = Array.from({ length: 7 }, (_, i) => addDays(weekStart, i))
@@ -95,6 +109,12 @@ export default async function SchedulePage({
               <i className="bi bi-chevron-right" aria-hidden="true" />
             </Link>
           </div>
+
+          <GenerateScheduleButton
+            subjects={schedulingSubjects}
+            events={schedulingEvents}
+            weekStartISO={weekStart.toISOString()}
+          />
 
           <NewEventButton
             subjects={subjectOptions}
@@ -134,13 +154,8 @@ export default async function SchedulePage({
                     {formatDay(day)}
                     {today && <span className="badge text-bg-primary ms-2">Today</span>}
                   </h2>
-          <GenerateScheduleButton
-            subjects={schedulingSubjects}
-            events={schedulingEvents}
-            weekStartISO={weekStart.toISOString()}
-          />
 
-          <NewEventButton
+                  <NewEventButton
                     subjects={subjectOptions}
                     defaultDateISO={day.toISOString()}
                     label="Add"

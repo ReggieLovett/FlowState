@@ -80,6 +80,17 @@ anything else. "Restore defaults" fills gaps without disturbing customised rows.
 **Schedule.** A week view with day sections, create and edit dialogs, all-day
 events for deadlines, and completion tracking.
 
+**Smart scheduling.** "Generate" on the schedule page builds a study plan for
+one, two or four weeks. Subjects are ranked by exam proximity, difficulty,
+urgency and time already booked, and focus blocks are placed in real gaps around
+existing commitments. No subject is studied after its exam, blocks can alternate
+between subjects or stack into longer sessions, and a per-subject daily limit
+stops one subject taking over a day. The preview shows the split, the reasons
+behind each subject's rank and every block day by day before anything is saved.
+Generated blocks are stamped with `generatedAt`, so a plan can be replaced or
+cleared without touching events entered by hand. Preferences are remembered per
+browser.
+
 **Theme.** Light and dark, following the system by default, remembered per
 browser and applied before first paint so there is no flash. Every foreground and
 background pair clears WCAG AA in both themes.
@@ -93,7 +104,7 @@ background pair clears WCAG AA in both themes.
 | `/`                   | Public    | Redirects to the dashboard or to sign-in |
 | `/login`, `/register` | Public    | Authentication                           |
 | `/dashboard`          | Protected | Today, this week, upcoming deadlines     |
-| `/dashboard/schedule` | Protected | The week, with event CRUD                |
+| `/dashboard/schedule` | Protected | The week, event CRUD, smart scheduling   |
 | `/dashboard/subjects` | Protected | Subject CRUD and restore defaults        |
 | `/dashboard/settings` | Protected | Account and category reference           |
 | `/api/schedule`       | Protected | Example JSON API, session-scoped         |
@@ -151,8 +162,8 @@ deployment:
 
 Delete either once you are sure nothing else is needed from it.
 
-**Note:** the automatic scheduling engine from `legacy-tailwind/` (which
-allocated study time by exam proximity and difficulty) is **not** carried into
-this version. This app is a manual scheduler. Porting that engine on top of the
-`Subject` and `ScheduleEvent` models is a self-contained piece of work if you
-want it back.
+The automatic scheduling engine from `legacy-tailwind/` now lives in
+`lib/scheduling.ts`, ported onto the `Subject` and `ScheduleEvent` models. Its
+scoring weights are unchanged. The exam-proximity curve was corrected so that
+it only falls as an exam moves further away; previously a subject with no exam
+outranked one with an exam three weeks out.

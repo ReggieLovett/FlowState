@@ -1,51 +1,49 @@
 'use client'
 
 import { useState } from 'react'
-import { GenerateScheduleDialog } from './GenerateScheduleDialog'
-import type { Category } from '@prisma/client'
+import {
+  GenerateScheduleDialog,
+  type SerialEvent,
+  type SerialSubject,
+} from './GenerateScheduleDialog'
 
-export interface SchedulingSubject {
-  id: string
-  name: string
-  category: Category
-  colorHex: string
-  difficulty: number
-  examDate: string | null
-}
-
-export interface SchedulingEvent {
-  id: string
-  subjectId: string | null
-  startsAt: string
-  endsAt: string
-  isAllDay: boolean
-  status: string
-}
-
+/**
+ * Entry point to the planner.
+ *
+ * The dialog is heavy and reads the clock, so it lives behind this button and
+ * its body only mounts once opened.
+ */
 export function GenerateScheduleButton({
   subjects,
   events,
   weekStartISO,
+  className = 'btn btn-outline-primary btn-sm',
+  label = 'Generate',
 }: {
-  subjects: SchedulingSubject[]
-  events: SchedulingEvent[]
+  subjects: SerialSubject[]
+  events: SerialEvent[]
   weekStartISO: string
+  className?: string
+  label?: string
 }) {
   const [open, setOpen] = useState(false)
+  const disabled = subjects.length === 0
 
   return (
     <>
       <button
         type="button"
-        className="btn btn-outline-primary btn-sm"
+        className={className}
         onClick={() => setOpen(true)}
-        disabled={subjects.length === 0}
-        title={subjects.length === 0 ? 'Add a subject first' : 'Smart schedule'}
+        disabled={disabled}
+        title={disabled ? 'Add a subject first' : 'Build a study plan from your priorities'}
       >
-        <i className="bi bi-magic me-1" aria-hidden="true" />
-        Generate
+        <i className="bi bi-stars me-1" aria-hidden="true" />
+        {label}
       </button>
 
+      {/* Rendered unconditionally so the native dialog keeps its place in the
+          DOM across opens; the expensive part is inside and mounts on demand. */}
       <GenerateScheduleDialog
         open={open}
         onClose={() => setOpen(false)}

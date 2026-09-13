@@ -103,6 +103,8 @@ lib/
   prisma.ts                Client singleton with the pg driver adapter.
   auth-guard.ts            requireUserId() / getUserId().
   categories.ts            Display metadata for the commitment types.
+  scheduling.ts            Smart scheduling engine. Pure; runs in the browser
+                           for a live preview, no storage access.
   data/
     schedule.ts            Event CRUD, all user-scoped.
     subjects.ts            Subject CRUD, all user-scoped.
@@ -111,6 +113,7 @@ lib/
   actions/
     auth.ts                Sign in, register, sign out.
     schedule.ts            Event create/update/delete/status.
+    scheduling.ts          Confirm, replace or clear a generated plan.
     subjects.ts            Subject CRUD, archive, restore defaults.
 
 app/

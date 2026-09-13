@@ -40,6 +40,7 @@ const eventSelect = {
   notes: true,
   status: true,
   recurrenceRule: true,
+  generatedAt: true,
   subject: { select: { id: true, name: true, code: true, colorHex: true } },
 } satisfies Prisma.ScheduleEventSelect
 
@@ -197,4 +198,135 @@ export async function getDashboardSummary(from: Date, to: Date) {
   ])
 
   return { byCategory, upcomingDeadlines, totalEvents }
+}
+
+// ---------------------------------------------------------------------------
+// Smart scheduling
+// ---------------------------------------------------------------------------
+
+/**
+ * The blocks the scheduler wrote inside [from, to).
+ *
+ * `generatedAt: { not: null }` is the whole definition of "machine-made", which
+ * is why the column exists: without it this query would have to guess from the
+ * title, and a user who renamed a block would have it treated as their own work
+ * on one screen and as disposable on another.
+ */
+export async function listGeneratedInRange(from: Date, to: Date) {
+  const userId = await requireUserId()
+
+  return prisma.scheduleEvent.findMany({
+    where: {
+      userId,
+      generatedAt: { not: null },
+      startsAt: { lt: to },
+      endsAt: { gt: from },
+    },
+    select: eventSelect,
+    orderBy: { startsAt: 'asc' },
+  })
+}
+
+export async function countGeneratedInRange(from: Date, to: Date): Promise<number> {
+  const userId = await requireUserId()
+
+  return prisma.scheduleEvent.count({
+    where: {
+      userId,
+      generatedAt: { not: null },
+      startsAt: { lt: to },
+      endsAt: { gt: from },
+    },
+  })
+}
+
+/**
+ * Removes generated blocks in a window, leaving hand-made events alone.
+ *
+ * `deleteMany` with `userId` in the filter rather than a read-then-delete: the
+ * count comes back without a second round trip, and there is no window between
+ * the ownership check and the write.
+ */
+export async function deleteGeneratedInRange(from: Date, to: Date): Promise<number> {
+  const userId = await requireUserId()
+
+  const { count } = await prisma.scheduleEvent.deleteMany({
+    where: {
+      userId,
+      generatedAt: { not: null },
+      startsAt: { lt: to },
+      endsAt: { gt: from },
+    },
+  })
+
+  return count
+}
+
+export interface GeneratedEventInput {
+  subjectId: string
+  title: string
+  category: Category
+  startsAt: Date
+  endsAt: Date
+  notes?: string | null
+}
+
+/**
+ * Writes a batch of generated blocks, optionally replacing the previous batch
+ * in the same window.
+ *
+ * The subject ids arrive from the browser, so every one of them is checked
+ * against this user before anything is written. A single `findMany` does it:
+ * asking for the ids scoped by `userId` and comparing set sizes costs one query
+ * regardless of how many blocks are in the batch.
+ *
+ * Delete and insert share a transaction so a failed insert cannot leave the
+ * user with an emptied week.
+ */
+export async function replaceGeneratedEvents(
+  blocks: GeneratedEventInput[],
+  options: { replaceFrom?: Date; replaceTo?: Date } = {},
+): Promise<{ created: number; removed: number }> {
+  const userId = await requireUserId()
+  if (blocks.length === 0) return { created: 0, removed: 0 }
+
+  const subjectIds = [...new Set(blocks.map((b) => b.subjectId))]
+  const owned = await prisma.subject.findMany({
+    where: { userId, id: { in: subjectIds } },
+    select: { id: true },
+  })
+  if (owned.length !== subjectIds.length) throw new Error('Subject not found')
+
+  const generatedAt = new Date()
+  const shouldReplace = Boolean(options.replaceFrom && options.replaceTo)
+
+  const [removed, created] = await prisma.$transaction([
+    prisma.scheduleEvent.deleteMany({
+      where: shouldReplace
+        ? {
+            userId,
+            generatedAt: { not: null },
+            startsAt: { lt: options.replaceTo! },
+            endsAt: { gt: options.replaceFrom! },
+          }
+        : // Matches nothing. Keeps the transaction a single shape.
+          { userId, id: '' },
+    }),
+    prisma.scheduleEvent.createMany({
+      data: blocks.map((block) => ({
+        userId,
+        subjectId: block.subjectId,
+        title: block.title,
+        category: block.category,
+        startsAt: block.startsAt,
+        endsAt: block.endsAt,
+        notes: block.notes ?? null,
+        isAllDay: false,
+        status: 'SCHEDULED' as const,
+        generatedAt,
+      })),
+    }),
+  ])
+
+  return { created: created.count, removed: removed.count }
 }

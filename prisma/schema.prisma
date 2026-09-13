@@ -194,6 +194,17 @@ model ScheduleEvent {
   /// Occurrences are expanded at read time rather than stored as rows.
   recurrenceRule String?
 
+  /// When the smart scheduler created this row. Null for anything the user
+  /// entered by hand.
+  ///
+  /// A timestamp rather than a boolean because one press of "Generate" is one
+  /// batch: every block in a run shares an instant, so "undo the last plan" is
+  /// a delete by that value, and "replace the plan in this range" does not have
+  /// to guess which blocks were machine-made. Editing a generated block leaves
+  /// the stamp alone; the user can detach it by clearing the plan and keeping
+  /// the row, which the UI does not need yet.
+  generatedAt DateTime?
+
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
@@ -201,4 +212,7 @@ model ScheduleEvent {
   // Serves the dominant query: this user's events in a date window.
   @@index([userId, startsAt])
   @@index([userId, subjectId])
+  // Serves "the blocks the scheduler made in this window", which every
+  // regenerate and every clear has to answer before it writes.
+  @@index([userId, generatedAt])
 }

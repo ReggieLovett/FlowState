@@ -24,6 +24,11 @@
   --bs-border-color: #e3e0da;
   --bs-secondary-bg: #f2efe9;
   --bs-tertiary-bg: #f7f5f1;
+  /* Bootstrap's .bg-body* utilities read these triplets, not the hex tokens
+     above, so without them every dialog painted stock white and grey. */
+  --bs-body-bg-rgb: 251, 250, 248;
+  --bs-secondary-bg-rgb: 242, 239, 233;
+  --bs-tertiary-bg-rgb: 247, 245, 241;
 
   --bs-body-font-family: var(--font-app), system-ui, -apple-system, 'Segoe UI', sans-serif;
   --bs-border-radius: 0.625rem;
@@ -51,6 +56,9 @@
   --bs-border-color: #33383c;
   --bs-secondary-bg: #202426;
   --bs-tertiary-bg: #1b1e20;
+  --bs-body-bg-rgb: 22, 24, 26;
+  --bs-secondary-bg-rgb: 32, 36, 38;
+  --bs-tertiary-bg-rgb: 27, 30, 32;
 
   --bs-link-color: var(--bs-primary);
   --bs-link-hover-color: #7fd4b3;
@@ -204,9 +212,21 @@ body {
 /* Bootstrap's focus ring is tied to its default blue. */
 .form-control:focus,
 .form-select:focus,
+.form-check-input:focus,
 .btn:focus-visible {
   border-color: var(--bs-primary);
   box-shadow: 0 0 0 0.2rem rgba(var(--bs-primary-rgb), 0.22);
+}
+
+/* Checkboxes, radios and switches are compiled with the same blue. The switch
+   knob is an SVG data URI, so its focused state needs its own image. */
+.form-check-input:checked {
+  background-color: var(--bs-primary);
+  border-color: var(--bs-primary);
+}
+
+.form-switch .form-check-input:focus:not(:checked) {
+  --bs-form-switch-bg: url("data:image/svg+xml,%3csvg xmlns='http://www.w3.org/2000/svg' viewBox='-4 -4 8 8'%3e%3ccircle r='3' fill='%231f6f54'/%3e%3c/svg%3e");
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -216,4 +236,199 @@ body {
     animation-duration: 0.01ms !important;
     transition-duration: 0.01ms !important;
   }
+}
+
+/* ---------------------------------------------------------------------------
+   Native dialogs
+   
+   The app uses <dialog> rather than Bootstrap's Modal, so Bootstrap styles none
+   of this. Everything below is the chrome Modal would otherwise have given us:
+   a dimmed backdrop, a shadow, and an entrance that does not jump.
+   --------------------------------------------------------------------------- */
+
+dialog {
+  border: 1px solid var(--bs-border-color);
+  box-shadow: 0 24px 64px -24px rgba(0, 0, 0, 0.4), 0 2px 8px rgba(0, 0, 0, 0.08);
+  max-width: 96vw;
+  max-height: 92dvh;
+  padding: 0;
+}
+
+dialog::backdrop {
+  background: rgba(16, 20, 18, 0.42);
+  backdrop-filter: blur(2px);
+}
+
+[data-bs-theme='dark'] dialog::backdrop {
+  background: rgba(0, 0, 0, 0.6);
+}
+
+dialog[open] {
+  animation: dialog-in 0.16s cubic-bezier(0.2, 0, 0.2, 1);
+}
+
+dialog[open]::backdrop {
+  animation: backdrop-in 0.16s ease;
+}
+
+@keyframes dialog-in {
+  from {
+    opacity: 0;
+    transform: translateY(6px) scale(0.99);
+  }
+}
+
+@keyframes backdrop-in {
+  from {
+    opacity: 0;
+  }
+}
+
+/* ---------------------------------------------------------------------------
+   Smart scheduling dialog
+   --------------------------------------------------------------------------- */
+
+.plan-dialog {
+  width: min(58rem, 96vw);
+}
+
+/* Scoped to [open]. An author `display` outranks the browser rule that hides a
+   closed dialog, so a bare `.plan-dialog { display: flex }` renders the planner
+   inline on the schedule page. */
+.plan-dialog[open] {
+  display: flex;
+  flex-direction: column;
+}
+
+/* The header and footer stay put; only the middle scrolls, so the confirm
+   button is reachable however long the preview grows. */
+.plan-dialog-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+.plan-settings {
+  background: var(--bs-tertiary-bg);
+}
+
+@media (min-width: 992px) {
+  .border-lg-end {
+    border-right: 1px solid var(--bs-border-color);
+  }
+}
+
+@media (max-width: 991.98px) {
+  .plan-settings {
+    border-bottom: 1px solid var(--bs-border-color);
+  }
+}
+
+/* On desktop the two columns scroll independently, so the settings stay in
+   view while the day-by-day preview is read. Stacked on mobile, the body
+   scrolls as one. */
+@media (min-width: 992px) {
+  .plan-dialog-body {
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+  }
+
+  /* nowrap matters: in a single-line flex row, stretched columns take the row's
+     height as a definite size, which is what lets them scroll. A wrapping row
+     leaves that height indefinite and the columns overflow and clip. */
+  .plan-dialog-body > .row {
+    flex: 1 1 auto;
+    flex-wrap: nowrap;
+    min-height: 0;
+  }
+
+  .plan-dialog-body > .row > [class*='col-'] {
+    min-height: 0;
+    overflow-y: auto;
+    overscroll-behavior: contain;
+  }
+}
+
+/* Seven equal cells, so the week reads as a strip rather than as buttons that
+   happen to be adjacent. */
+.day-toggle {
+  flex: 1 1 0;
+  min-width: 0;
+  padding-inline: 0;
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+}
+
+/* Stacked share of the plan, one segment per subject. */
+.plan-bar {
+  display: flex;
+  height: 8px;
+  border-radius: 999px;
+  overflow: hidden;
+  background: var(--bs-secondary-bg);
+}
+
+.plan-bar > span {
+  display: block;
+  min-width: 2px;
+}
+
+.plan-bar > span + span {
+  border-left: 1px solid var(--bs-body-bg);
+}
+
+.plan-subject {
+  padding: 0.5rem 0;
+  border-bottom: 1px solid var(--bs-border-color);
+}
+
+.plan-subject:last-child {
+  border-bottom: 0;
+}
+
+.plan-subject label {
+  cursor: pointer;
+}
+
+/* Relative priority, scaled against the highest scoring subject. Deliberately
+   thin: it is a ranking cue, not a number anyone should read off precisely.
+   Fixed width, so every row's track is the same length and the bars compare;
+   a flexible track shrank by however many reason chips sat beside it. */
+.plan-priority {
+  display: block;
+  flex: 0 0 5.5rem;
+  width: 5.5rem;
+  height: 4px;
+  border-radius: 999px;
+  background: var(--bs-secondary-bg);
+  overflow: hidden;
+}
+
+.plan-priority > span {
+  display: block;
+  height: 100%;
+  border-radius: 999px;
+  opacity: 0.85;
+}
+
+.plan-block {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 0.3rem;
+  max-width: 11rem;
+  padding: 0.15rem 0.45rem 0.15rem 0.4rem;
+  border: 1px solid var(--bs-border-color);
+  border-left: 3px solid var(--block-color, var(--bs-primary));
+  border-radius: 0.375rem;
+  background: var(--bs-body-bg);
+  font-size: 0.7rem;
+  line-height: 1.4;
+  white-space: nowrap;
+}
+
+.plan-block > .tnum {
+  color: var(--bs-secondary-color);
+  font-weight: 600;
 }
