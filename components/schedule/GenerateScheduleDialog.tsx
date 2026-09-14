@@ -40,10 +40,21 @@ export interface SerialEvent {
 
 type RangeKey = 'week' | 'fortnight' | 'month'
 
+/**
+ * Counted forward from the first day that can still be planned. These used to
+ * end on the Sunday of the week on screen, which left "This week" empty from
+ * Saturday onwards and nothing at all when viewing a past week.
+ */
 const RANGES: Record<RangeKey, { label: string; days: number }> = {
-  week: { label: 'This week', days: 6 },
-  fortnight: { label: 'Two weeks', days: 13 },
-  month: { label: 'Four weeks', days: 27 },
+  week: { label: 'Next 7 days', days: 6 },
+  fortnight: { label: 'Next 14 days', days: 13 },
+  month: { label: 'Next 28 days', days: 27 },
+}
+
+/** A date-only value stored at UTC midnight, as the local calendar day. */
+function examDay(iso: string): Date {
+  const d = new Date(iso)
+  return new Date(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate())
 }
 
 /** Monday first, because the schedule page starts its weeks there. */
@@ -168,6 +179,11 @@ function NumberField({
   step: number
   onChange: (value: number) => void
 }) {
+  // What the user is typing, until it is a usable number or the field blurs.
+  // Clamping each keystroke made values impossible to type: clearing "180" to
+  // retype it snapped to the minimum before the second digit arrived.
+  const [draft, setDraft] = useState<string | null>(null)
+
   return (
     <div>
       <label htmlFor={id} className="form-label small fw-medium mb-1">
@@ -177,14 +193,23 @@ function NumberField({
         <input
           id={id}
           type="number"
+          inputMode="numeric"
           className="form-control tnum"
           min={min}
           max={max}
           step={step}
-          value={value}
+          value={draft ?? String(value)}
           onChange={(event) => {
-            const next = Number(event.target.value)
-            if (Number.isFinite(next)) onChange(Math.min(max, Math.max(min, next)))
+            const raw = event.target.value
+            setDraft(raw)
+            const next = Number(raw)
+            if (raw !== '' && Number.isFinite(next) && next >= min && next <= max) onChange(next)
+          }}
+          onBlur={() => {
+            if (draft === null) return
+            const next = Number(draft)
+            if (draft !== '' && Number.isFinite(next)) onChange(Math.min(max, Math.max(min, Math.round(next))))
+            setDraft(null)
           }}
         />
         {suffix && <span className="input-group-text">{suffix}</span>}
@@ -265,7 +290,7 @@ function PlanBody({
     const today = toISODate(new Date())
     return new Set(
       subjects
-        .filter((s) => s.examDate && toISODate(new Date(s.examDate)) < today)
+        .filter((s) => s.examDate && toISODate(examDay(s.examDate)) < today)
         .map((s) => s.id),
     )
   })
@@ -294,7 +319,7 @@ function PlanBody({
   const todayIso = toISODate(now)
   const weekStartIso = toISODate(new Date(weekStartISO))
   const startDate = weekStartIso > todayIso ? weekStartIso : todayIso
-  const endDate = addDaysISO(weekStartIso, RANGES[range].days)
+  const endDate = addDaysISO(startDate, RANGES[range].days)
 
   // Half-open [from, to): `to` is midnight after the last day, so a block that
   // ends at 24:00 still sits inside the range the server checks against.
@@ -339,7 +364,7 @@ function PlanBody({
     () =>
       included.map((subject) => ({
         ...subject,
-        examDate: subject.examDate ? new Date(subject.examDate) : null,
+        examDate: subject.examDate ? examDay(subject.examDate) : null,
       })),
     [included],
   )
@@ -378,24 +403,32 @@ function PlanBody({
   const error = confirmState.error ?? clearState.error
   const maxPriority = Math.max(1, ...plan.scored.map((s) => s.priorityScore))
 
-  function handleSubmit(event: React.FormEvent<HTMLFormElement>) {
-    event.preventDefault()
-    const form = event.currentTarget
-    const field = form.elements.namedItem('payload') as HTMLInputElement
-    field.value = JSON.stringify({
-      replace,
-      rangeStart: rangeBounds.from.toISOString(),
-      rangeEnd: rangeBounds.to.toISOString(),
-      blocks: plan.blocks.map((block) => ({
-        subjectId: block.subjectId,
-        title: `${block.subjectName} · Focus block`,
-        category: block.category,
-        startsAt: block.startsAt.toISOString(),
-        endsAt: block.endsAt.toISOString(),
-      })),
-    })
-    form.requestSubmit()
-  }
+  // The plan travels in a hidden field that always holds the current preview.
+  //
+  // This used to be filled in by an onSubmit handler that called
+  // preventDefault() and then requestSubmit(). React skips a form action whose
+  // submit event was cancelled, and the browser ignores requestSubmit() while
+  // the first submit is still dispatching, so the button never saved anything.
+  // A controlled value needs no handler: React reads it with the rest of the
+  // form when the action runs.
+  const payload = useMemo(
+    () =>
+      JSON.stringify({
+        replace,
+        rangeStart: rangeBounds.from.toISOString(),
+        rangeEnd: rangeBounds.to.toISOString(),
+        blocks: plan.blocks.map((block) => ({
+          subjectId: block.subjectId,
+          title: `${block.subjectName} · Focus block`,
+          // Study time, not the subject's own type: a revision block for a
+          // lecture course is not a lecture.
+          category: 'DEEP_WORK_SHIFT',
+          startsAt: block.startsAt.toISOString(),
+          endsAt: block.endsAt.toISOString(),
+        })),
+      }),
+    [plan.blocks, replace, rangeBounds],
+  )
 
   return (
     <>
@@ -795,8 +828,8 @@ function PlanBody({
           <ClearButton count={replaceable.length} />
         </form>
 
-        <form action={confirmAction} onSubmit={handleSubmit} className="d-flex gap-2 ms-auto">
-          <input type="hidden" name="payload" value="" />
+        <form action={confirmAction} className="d-flex gap-2 ms-auto">
+          <input type="hidden" name="payload" value={payload} />
           <button type="button" className="btn btn-outline-secondary" onClick={onClose}>
             Cancel
           </button>

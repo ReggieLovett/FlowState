@@ -35,7 +35,8 @@ const blockSchema = z.object({
 
 const confirmSchema = z
   .object({
-    blocks: z.array(blockSchema).min(1, 'Nothing to schedule.').max(400),
+    // Four weeks of 15-minute blocks on a long day is well past 400, the old cap.
+    blocks: z.array(blockSchema).min(1, 'Nothing to schedule.').max(2000, 'That plan is too large. Shorten the range.'),
     replace: z.boolean().default(false),
     rangeStart: z.iso.datetime(),
     rangeEnd: z.iso.datetime(),
@@ -100,7 +101,13 @@ export async function confirmScheduleAction(
     return { ok: true, created, removed }
   } catch (error) {
     unstable_rethrow(error)
-    return { error: 'Some subjects are no longer available. Reload and try again.' }
+    // Only an ownership miss means a subject went away. Anything else, such as
+    // a dropped database connection, used to show the same message and sent
+    // people looking for a deleted subject that was never the problem.
+    if (error instanceof Error && error.message === 'Subject not found') {
+      return { error: 'Some subjects are no longer available. Reload and try again.' }
+    }
+    return { error: 'The plan could not be saved. Try again in a moment.' }
   }
 }
 

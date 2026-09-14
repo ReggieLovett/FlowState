@@ -19,7 +19,7 @@ import {
 export const metadata: Metadata = { title: 'Schedule' }
 export const dynamic = 'force-dynamic'
 
-/** Longest range the planner offers, in days from the start of the week. */
+/** Longest range the planner offers, in days from its first plannable day. */
 const PLANNER_HORIZON_DAYS = 28
 
 type View = 'week' | 'day' | 'list'
@@ -66,7 +66,8 @@ export default async function SchedulePage({
   // can see. Reading the whole horizon in one query costs the same index scan as
   // reading the visible week, so the week view slices this rather than
   // re-querying.
-  const horizonEnd = addDays(weekStart, PLANNER_HORIZON_DAYS)
+  const planStart = weekStart > todayStart ? weekStart : todayStart
+  const horizonEnd = addDays(planStart, PLANNER_HORIZON_DAYS)
 
   const [horizonEvents, subjects] = await Promise.all([
     listEventsInRange(weekStart, horizonEnd),
