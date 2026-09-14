@@ -3,9 +3,15 @@ import Link from 'next/link'
 import { auth } from '@/auth'
 import { getDashboardSummary, listEventsInRange } from '@/lib/data/schedule'
 import { listSubjects } from '@/lib/data/subjects'
+import { getLook, getProgress } from '@/lib/data/progress'
 import { CATEGORY_META, CATEGORY_ORDER } from '@/lib/categories'
 import { EmptyState } from '@/components/dashboard/EmptyState'
 import { EventList } from '@/components/schedule/EventList'
+import { PlayerCard } from '@/components/rewards/PlayerCard'
+import { StatTiles } from '@/components/progress/StatTiles'
+import { WeekChart } from '@/components/progress/WeekChart'
+import { StreakCalendar } from '@/components/progress/StreakCalendar'
+import { SubjectBreakdown } from '@/components/progress/SubjectBreakdown'
 import { addDays, formatLongDay, relativeDays, startOfWeek } from '@/lib/format'
 
 export const metadata: Metadata = { title: 'Overview' }
@@ -24,15 +30,47 @@ export default async function DashboardPage() {
   const weekStart = startOfWeek(now)
   const weekEnd = addDays(weekStart, 7)
 
-  // Three user-scoped reads. None takes a userId; each derives it from the
-  // session inside the data layer.
-  const [todayEvents, summary, subjects] = await Promise.all([
+  // User-scoped reads. None takes a userId; each derives it from the session
+  // inside the data layer. Progress and look are cached per request, so the
+  // layout's copies cost nothing extra.
+  const [todayEvents, summary, subjects, progress, look] = await Promise.all([
     listEventsInRange(todayStart, todayEnd),
     getDashboardSummary(weekStart, weekEnd),
-    listSubjects(),
+    listSubjects({ includeArchived: true }),
+    getProgress(),
+    getLook(),
   ])
 
+  const activeSubjects = subjects.filter((s) => !s.archivedAt)
   const counts = new Map(summary.byCategory.map((row) => [row.category, row._count._all]))
+
+  // Exams from subjects and deadline events, next two weeks, one list. The
+  // spec's "upcoming exams" lived on subjects; this app's deadlines are events.
+  const horizon = addDays(todayStart, 15)
+  const upcoming = [
+    ...activeSubjects
+      .filter((s) => s.examDate && s.examDate >= todayStart && s.examDate < horizon)
+      .map((s) => ({
+        id: `exam-${s.id}`,
+        title: `${s.name} exam`,
+        detail: s.code ?? 'Exam',
+        date: s.examDate!,
+        color: s.colorHex,
+        icon: 'bi-mortarboard',
+      })),
+    ...summary.upcomingDeadlines
+      .filter((e) => e.startsAt < horizon)
+      .map((e) => ({
+        id: e.id,
+        title: e.title,
+        detail: e.subject?.name ?? CATEGORY_META[e.category].label,
+        date: e.startsAt,
+        color: e.subject?.colorHex ?? CATEGORY_META[e.category].colorHex,
+        icon: 'bi-flag',
+      })),
+  ]
+    .sort((a, b) => a.date.getTime() - b.date.getTime())
+    .slice(0, 6)
 
   return (
     <>
@@ -42,6 +80,9 @@ export default async function DashboardPage() {
         </h1>
         <p className="text-secondary mb-0">{formatLongDay(now)}</p>
       </header>
+
+      <PlayerCard name={userName} look={look} progress={progress} />
+      <StatTiles progress={progress} />
 
       <div className="row g-4">
         <div className="col-12 col-xl-7">
@@ -76,6 +117,10 @@ export default async function DashboardPage() {
               <h2 className="h6 fw-semibold mb-0">This week</h2>
             </div>
             <div className="card-body">
+              <div className="mb-4">
+                <WeekChart week={progress.week} />
+              </div>
+
               <p className="text-secondary small mb-3">
                 <span className="tnum fw-semibold text-body fs-5">{summary.totalEvents}</span>{' '}
                 commitments between {formatLongDay(weekStart)} and {formatLongDay(addDays(weekEnd, -1))}
@@ -104,36 +149,70 @@ export default async function DashboardPage() {
           </div>
 
           <div className="card">
-            <div className="card-header bg-transparent">
-              <h2 className="h6 fw-semibold mb-0">Upcoming deadlines</h2>
+            <div className="card-header bg-transparent d-flex align-items-center justify-content-between">
+              <h2 className="h6 fw-semibold mb-0">Exams and deadlines</h2>
+              <span className="text-secondary small">Next 2 weeks</span>
             </div>
 
-            {summary.upcomingDeadlines.length === 0 ? (
+            {upcoming.length === 0 ? (
               <div className="card-body">
                 <p className="text-secondary small mb-0">
-                  No project deadlines ahead. Add one and it will be tracked here.
+                  Nothing due in the next two weeks. Add an exam date to a subject, or a
+                  project deadline, and it will be tracked here.
                 </p>
               </div>
             ) : (
               <ul className="list-group list-group-flush">
-                {summary.upcomingDeadlines.map((event) => (
+                {upcoming.map((item) => (
                   <li
-                    key={event.id}
-                    className="list-group-item d-flex align-items-center justify-content-between gap-3 bg-transparent"
+                    key={item.id}
+                    className="list-group-item event-row d-flex align-items-center justify-content-between gap-3 bg-transparent"
+                    style={{ ['--event-color' as string]: item.color }}
                   >
                     <div className="min-width-0">
-                      <div className="small fw-medium text-truncate">{event.title}</div>
+                      <div className="small fw-medium text-truncate">
+                        <i className={`bi ${item.icon} text-secondary me-1`} aria-hidden="true" />
+                        {item.title}
+                      </div>
                       <div className="text-secondary" style={{ fontSize: '0.75rem' }}>
-                        {event.subject?.name ?? CATEGORY_META[event.category].label}
+                        {item.detail}
                       </div>
                     </div>
                     <span className="badge text-bg-secondary tnum flex-shrink-0">
-                      {relativeDays(event.startsAt, now)}
+                      {relativeDays(item.date, now)}
                     </span>
                   </li>
                 ))}
               </ul>
             )}
+          </div>
+        </div>
+      </div>
+
+      <div className="row g-4 mt-2">
+        <div className="col-12 col-xl-7">
+          <div className="card h-100">
+            <div className="card-header bg-transparent d-flex align-items-center justify-content-between">
+              <h2 className="h6 fw-semibold mb-0">Study streak</h2>
+              <Link href="/dashboard/rewards" className="small text-decoration-none">
+                Rewards
+              </Link>
+            </div>
+            <div className="card-body">
+              <StreakCalendar progress={progress} />
+            </div>
+          </div>
+        </div>
+
+        <div className="col-12 col-xl-5">
+          <div className="card h-100">
+            <div className="card-header bg-transparent d-flex align-items-center justify-content-between">
+              <h2 className="h6 fw-semibold mb-0">Time by subject</h2>
+              <span className="text-secondary small">Last 30 days</span>
+            </div>
+            <div className="card-body">
+              <SubjectBreakdown progress={progress} subjects={subjects} />
+            </div>
           </div>
         </div>
       </div>
@@ -148,7 +227,7 @@ export default async function DashboardPage() {
               </Link>
             </div>
 
-            {subjects.length === 0 ? (
+            {activeSubjects.length === 0 ? (
               <EmptyState
                 icon="bi-collection"
                 title="No subjects yet"
@@ -161,7 +240,7 @@ export default async function DashboardPage() {
               />
             ) : (
               <ul className="list-group list-group-flush">
-                {subjects.slice(0, 6).map((subject) => {
+                {activeSubjects.slice(0, 6).map((subject) => {
                   const meta = CATEGORY_META[subject.category]
                   return (
                     <li
@@ -191,13 +270,13 @@ export default async function DashboardPage() {
                     </li>
                   )
                 })}
-                {subjects.length > 6 && (
+                {activeSubjects.length > 6 && (
                   <li className="list-group-item bg-transparent text-center">
                     <Link
                       href="/dashboard/subjects"
                       className="small text-decoration-none"
                     >
-                      +{subjects.length - 6} more
+                      +{activeSubjects.length - 6} more
                     </Link>
                   </li>
                 )}

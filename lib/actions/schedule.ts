@@ -1,9 +1,12 @@
 'use server'
 
 import { revalidatePath } from 'next/cache'
+import { unstable_rethrow } from 'next/navigation'
 import { z } from 'zod'
 import { createEvent, deleteEvent, updateEvent } from '@/lib/data/schedule'
+import { readProgress } from '@/lib/data/progress'
 import { CATEGORY_ORDER } from '@/lib/categories'
+import { diffRewards, type RewardDiff } from '@/lib/gamification'
 import type { Category } from '@prisma/client'
 
 /**
@@ -121,6 +124,7 @@ export async function updateEventAction(
     if (error instanceof Error && error.message === 'Subject not found') {
       return { error: 'That subject is no longer available.' }
     }
+    unstable_rethrow(error)
     // A row belonging to someone else matches nothing and Prisma throws.
     return { error: 'Could not update that event.' }
   }
@@ -149,4 +153,101 @@ export async function setEventStatusAction(formData: FormData): Promise<void> {
 
   revalidatePath('/dashboard')
   revalidatePath('/dashboard/schedule')
+}
+
+// ---------------------------------------------------------------------------
+// Completion with rewards
+// ---------------------------------------------------------------------------
+
+export interface CompleteState {
+  error?: string
+  /** Changes on every successful submit, so the client can tell runs apart. */
+  nonce?: number
+  status?: 'SCHEDULED' | 'COMPLETED'
+  rewards?: RewardDiff
+  /** The block has not started yet, so its XP is pending. */
+  pending?: boolean
+}
+
+/**
+ * Ticks or un-ticks an event and reports what that did to XP.
+ *
+ * The reward is a before/after diff of the derived progress rather than a
+ * formula applied to this one block, because a single tick can also complete a
+ * day, extend a streak past a bonus, or unlock an avatar. Two reads, one write.
+ */
+export async function toggleCompleteAction(
+  _previous: CompleteState,
+  formData: FormData,
+): Promise<CompleteState> {
+  const id = String(formData.get('id') ?? '')
+  const parsed = z.enum(['SCHEDULED', 'COMPLETED']).safeParse(formData.get('status'))
+  if (!id || !parsed.success) return { error: 'Could not update that event.' }
+
+  const before = await readProgress()
+
+  let startsAt: Date
+  try {
+    const updated = await updateEvent(id, { status: parsed.data })
+    startsAt = updated.startsAt
+  } catch (error) {
+    // A signed-out session redirects by throwing; that must not become an error message.
+    unstable_rethrow(error)
+    return { error: 'Could not update that event.' }
+  }
+
+  const after = await readProgress()
+
+  revalidatePath('/dashboard', 'layout')
+  return {
+    nonce: Date.now(),
+    status: parsed.data,
+    rewards: diffRewards(before, after),
+    pending: parsed.data === 'COMPLETED' && startsAt > new Date(),
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Drag to reschedule
+// ---------------------------------------------------------------------------
+
+const moveSchema = z
+  .object({
+    id: z.string().min(1).max(64),
+    startsAt: z.iso.datetime(),
+    endsAt: z.iso.datetime(),
+  })
+  .refine((v) => v.startsAt < v.endsAt, { message: 'End must be after start.' })
+  .refine(
+    (v) => new Date(v.endsAt).getTime() - new Date(v.startsAt).getTime() <= 24 * 60 * 60 * 1000,
+    { message: 'A block cannot run longer than a day.' },
+  )
+
+/**
+ * Moves or resizes an event from the calendar grid.
+ *
+ * Takes instants computed in the browser, which is the timezone the user was
+ * looking at when they dropped the block. Only the two times are writable
+ * here; everything else goes through the edit dialog and its validation.
+ */
+export async function moveEventAction(input: {
+  id: string
+  startsAt: string
+  endsAt: string
+}): Promise<ActionState> {
+  const parsed = moveSchema.safeParse(input)
+  if (!parsed.success) return { error: parsed.error.issues[0]?.message ?? 'Invalid time.' }
+
+  try {
+    await updateEvent(parsed.data.id, {
+      startsAt: new Date(parsed.data.startsAt),
+      endsAt: new Date(parsed.data.endsAt),
+    })
+  } catch (error) {
+    unstable_rethrow(error)
+    return { error: 'Could not move that event.' }
+  }
+
+  revalidatePath('/dashboard', 'layout')
+  return { ok: true }
 }

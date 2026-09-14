@@ -77,8 +77,25 @@ milestone and a deep work block. They are ordinary rows the user owns, so
 renaming, recolouring, archiving and deleting all work on them exactly as on
 anything else. "Restore defaults" fills gaps without disturbing customised rows.
 
-**Schedule.** A week view with day sections, create and edit dialogs, all-day
-events for deadlines, and completion tracking.
+**Schedule.** Week and day calendars on an hour-by-hour grid, plus the original
+day-by-day list. Drag a block to move it, drag its bottom edge to resize, click
+empty time to add an event, and tick blocks off in place. Alt and the arrow keys
+move a focused block; add Shift to resize. Create and edit dialogs, all-day
+events for deadlines, and completion tracking work in every view.
+
+**Progress.** The overview shows the current streak, this week's completion rate,
+study time against last week, total XP, a completed-against-planned chart for the
+week, an 18-week streak calendar, hours per subject over 30 days, and exams and
+deadlines due in the next two weeks.
+
+**Rewards.** A 16-bit, Stardew Valley-inspired layer from the original spec. A
+completed block earns 10 XP per 25 minutes once it has started. Finishing every
+timed event in a day adds 50 XP, and consecutive days multiply block XP up to
+1.5x, with 100 XP on every seventh day in a row. XP unlocks five pixel-art avatars
+(Novice, Student, Scholar, Master, Prodigy), four seasonal backgrounds, and badges.
+XP is derived from completed events rather than stored, so un-ticking a block
+takes its XP back. The equipped avatar and season are kept in a cookie and
+re-checked against earned XP on every request.
 
 **Smart scheduling.** "Generate" on the schedule page builds a study plan for
 one, two or four weeks. Subjects are ranked by exam proximity, difficulty,
@@ -104,8 +121,9 @@ background pair clears WCAG AA in both themes.
 | `/`                   | Public    | Redirects to the dashboard or to sign-in |
 | `/login`, `/register` | Public    | Authentication                           |
 | `/dashboard`          | Protected | Today, this week, upcoming deadlines     |
-| `/dashboard/schedule` | Protected | The week, event CRUD, smart scheduling   |
+| `/dashboard/schedule` | Protected | Week, day and list views, smart planner  |
 | `/dashboard/subjects` | Protected | Subject CRUD and restore defaults        |
+| `/dashboard/rewards`  | Protected | Avatars, seasons, badges, XP breakdown   |
 | `/dashboard/settings` | Protected | Account and category reference           |
 | `/api/schedule`       | Protected | Example JSON API, session-scoped         |
 | `/api/register`       | Public    | Credentials sign-up                      |

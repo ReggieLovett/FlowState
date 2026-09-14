@@ -314,12 +314,16 @@ function PlanBody({
     [events],
   )
 
-  /** Generated blocks the confirm would overwrite, counted for the button. */
+  /**
+   * Generated blocks the confirm would overwrite, counted for the button.
+   * Completed ones are excluded: they hold earned XP and the server keeps them.
+   */
   const replaceable = useMemo(
     () =>
       parsedEvents.filter(
         (event) =>
           event.isGenerated &&
+          event.status !== 'COMPLETED' &&
           event.startsAt < rangeBounds.to &&
           event.endsAt > rangeBounds.from,
       ),
@@ -348,6 +352,7 @@ function PlanBody({
           (event) =>
             !(
               event.isGenerated &&
+              event.status !== 'COMPLETED' &&
               event.startsAt < rangeBounds.to &&
               event.endsAt > rangeBounds.from
             ),
@@ -601,7 +606,7 @@ function PlanBody({
                         ? 'No generated blocks in this range yet.'
                         : `Removes ${replaceable.length} generated ${
                             replaceable.length === 1 ? 'block' : 'blocks'
-                          }. Your own events are untouched.`}
+                          }. Your own events and completed blocks stay.`}
                     </span>
                   </label>
                 </div>

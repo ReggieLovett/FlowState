@@ -5,6 +5,9 @@ import { MobileNav } from '@/components/dashboard/MobileNav'
 import { SidebarNav } from '@/components/dashboard/SidebarNav'
 import { UserMenu } from '@/components/dashboard/UserMenu'
 import { ThemeToggle } from '@/components/bootstrap/ThemeToggle'
+import { LevelPill } from '@/components/rewards/LevelPill'
+import { RewardToaster } from '@/components/rewards/RewardToaster'
+import { getLook, getProgress } from '@/lib/data/progress'
 
 /**
  * Shell for every signed-in screen.
@@ -21,8 +24,11 @@ export default async function DashboardLayout({
   const session = await auth()
   if (!session?.user?.id) redirect('/login')
 
+  // Cached per request, so a page that also shows progress does not re-query.
+  const [progress, look] = await Promise.all([getProgress(), getLook()])
+
   return (
-    <div className="d-lg-flex">
+    <div className="d-lg-flex" data-season={look.season.id}>
       <aside
         className="app-sidebar d-none d-lg-flex flex-column p-3 flex-shrink-0"
         style={{ width: '15.5rem' }}
@@ -57,6 +63,7 @@ export default async function DashboardLayout({
             </div>
 
             <div className="d-flex align-items-center gap-2">
+              <LevelPill look={look} progress={progress} />
               <ThemeToggle />
               <UserMenu name={session.user.name ?? null} email={session.user.email ?? ''} />
             </div>
@@ -66,6 +73,7 @@ export default async function DashboardLayout({
         <main id="main" className="px-3 px-lg-4 py-4">
           {children}
         </main>
+        <RewardToaster />
       </div>
     </div>
   )

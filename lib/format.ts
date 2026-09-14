@@ -68,3 +68,12 @@ export function relativeDays(target: Date, from = new Date()): string {
   if (days < 0) return `${Math.abs(days)} days ago`
   return `in ${days} days`
 }
+
+/** `1h 40m`, `45m`, `0m`. For durations, not clock times. */
+export function formatMinutes(minutes: number): string {
+  const total = Math.max(0, Math.round(minutes))
+  const hours = Math.floor(total / 60)
+  const mins = total % 60
+  if (hours === 0) return `${mins}m`
+  return mins === 0 ? `${hours}h` : `${hours}h ${mins}m`
+}

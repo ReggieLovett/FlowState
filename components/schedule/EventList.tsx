@@ -1,16 +1,18 @@
 import { CATEGORY_META } from '@/lib/categories'
 import type { ScheduleEventDTO } from '@/lib/data/schedule'
 import { formatRange } from '@/lib/format'
-import { deleteEventAction, setEventStatusAction } from '@/lib/actions/schedule'
+import { deleteEventAction } from '@/lib/actions/schedule'
+import { CompleteToggle } from './CompleteToggle'
 import { EditEventButton } from './EditEventButton'
 import type { SubjectOption } from './EventFormModal'
 
 /**
  * Rows for a single day.
  *
- * Status changes and deletion are plain forms posting Server Actions, so they
- * work without JavaScript and cannot be redirected at another user's rows: the
- * actions resolve the owner from the session.
+ * Status changes and deletion are forms posting Server Actions, so they work
+ * without JavaScript and cannot be redirected at another user's rows: the
+ * actions resolve the owner from the session. The tick is a small client island
+ * on top of that form so it can announce the XP it earned.
  */
 export function EventList({
   events,
@@ -65,22 +67,8 @@ export function EventList({
             </div>
 
             <div className="d-flex align-items-center gap-1 flex-shrink-0">
-              <form action={setEventStatusAction}>
-                <input type="hidden" name="id" value={event.id} />
-                <input
-                  type="hidden"
-                  name="status"
-                  value={done ? 'SCHEDULED' : 'COMPLETED'}
-                />
-                <button
-                  type="submit"
-                  className={`btn btn-sm ${done ? 'btn-success' : 'btn-outline-secondary'}`}
-                  aria-label={done ? `Reopen ${event.title}` : `Mark ${event.title} done`}
-                  title={done ? 'Mark as not done' : 'Mark as done'}
-                >
-                  <i className="bi bi-check-lg" aria-hidden="true" />
-                </button>
-              </form>
+              {/* Same button as before; now reports the XP it earned. */}
+              <CompleteToggle id={event.id} title={event.title} done={done} />
 
               {editable && <EditEventButton event={event} subjects={subjects} />}
 

@@ -243,6 +243,9 @@ export async function countGeneratedInRange(from: Date, to: Date): Promise<numbe
 /**
  * Removes generated blocks in a window, leaving hand-made events alone.
  *
+ * Completed blocks are kept. XP, streaks and badges are derived from completed
+ * events, so clearing a plan must not quietly take back what was earned.
+ *
  * `deleteMany` with `userId` in the filter rather than a read-then-delete: the
  * count comes back without a second round trip, and there is no window between
  * the ownership check and the write.
@@ -254,6 +257,7 @@ export async function deleteGeneratedInRange(from: Date, to: Date): Promise<numb
     where: {
       userId,
       generatedAt: { not: null },
+      status: { not: 'COMPLETED' },
       startsAt: { lt: to },
       endsAt: { gt: from },
     },
@@ -306,6 +310,8 @@ export async function replaceGeneratedEvents(
         ? {
             userId,
             generatedAt: { not: null },
+            // Completed blocks hold earned XP; see deleteGeneratedInRange.
+            status: { not: 'COMPLETED' },
             startsAt: { lt: options.replaceTo! },
             endsAt: { gt: options.replaceFrom! },
           }

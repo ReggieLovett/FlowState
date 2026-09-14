@@ -105,15 +105,22 @@ lib/
   categories.ts            Display metadata for the commitment types.
   scheduling.ts            Smart scheduling engine. Pure; runs in the browser
                            for a live preview, no storage access.
+  gamification.ts          XP, levels, streaks, badges, avatar and season
+                           unlocks. Pure; derived from completed events.
+  pixel-art.ts             16-bit sprites and seasonal scenes as data.
   data/
     schedule.ts            Event CRUD, all user-scoped.
     subjects.ts            Subject CRUD, all user-scoped.
+    progress.ts            Progress and XP for the signed-in user, plus the
+                           equipped avatar and season (cookie, re-validated).
     seed-templates.ts      Starter templates. Pure; takes a client argument.
 
   actions/
     auth.ts                Sign in, register, sign out.
     schedule.ts            Event create/update/delete/status.
     scheduling.ts          Confirm, replace or clear a generated plan.
+                           Completed blocks are never removed: they hold XP.
+    rewards.ts             Equip an unlocked avatar or season.
     subjects.ts            Subject CRUD, archive, restore defaults.
 
 app/

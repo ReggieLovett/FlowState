@@ -1,5 +1,5 @@
 import type { Metadata, Viewport } from 'next'
-import { Inter } from 'next/font/google'
+import { Inter, Press_Start_2P } from 'next/font/google'
 import { BootstrapClient } from '@/components/bootstrap/BootstrapClient'
 import { ThemeScript } from '@/components/bootstrap/ThemeScript'
 
@@ -11,6 +11,15 @@ import './theme.css'
 const inter = Inter({
   subsets: ['latin'],
   variable: '--font-app',
+  display: 'swap',
+})
+
+// Accent face for levels, XP and reward titles only, as the original spec had
+// it. Body text stays in Inter.
+const pixel = Press_Start_2P({
+  subsets: ['latin'],
+  weight: '400',
+  variable: '--font-pixel',
   display: 'swap',
 })
 
@@ -34,11 +43,15 @@ export const viewport: Viewport = {
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
-    <html lang="en" suppressHydrationWarning>
+    // The font variables go on <html>, not <body>. theme.css reads them inside
+    // :root, and a custom property that references a variable :root cannot see
+    // resolves to nothing, which had been dropping every page to the browser's
+    // default serif.
+    <html lang="en" className={`${inter.variable} ${pixel.variable}`} suppressHydrationWarning>
       <head>
         <ThemeScript />
       </head>
-      <body className={inter.variable}>
+      <body>
         <a href="#main" className="visually-hidden-focusable btn btn-primary m-2">
           Skip to content
         </a>

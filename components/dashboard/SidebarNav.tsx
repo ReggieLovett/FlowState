@@ -7,6 +7,7 @@ const ITEMS = [
   { href: '/dashboard', label: 'Overview', icon: 'bi-grid-1x2' },
   { href: '/dashboard/schedule', label: 'Schedule', icon: 'bi-calendar2-week' },
   { href: '/dashboard/subjects', label: 'Subjects', icon: 'bi-collection' },
+  { href: '/dashboard/rewards', label: 'Rewards', icon: 'bi-trophy' },
   { href: '/dashboard/settings', label: 'Settings', icon: 'bi-gear' },
 ] as const
 

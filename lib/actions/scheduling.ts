@@ -1,6 +1,7 @@
 'use server'
 
 import { revalidatePath } from 'next/cache'
+import { unstable_rethrow } from 'next/navigation'
 import { z } from 'zod'
 import {
   deleteGeneratedInRange,
@@ -97,7 +98,8 @@ export async function confirmScheduleAction(
     revalidatePath('/dashboard')
     revalidatePath('/dashboard/schedule')
     return { ok: true, created, removed }
-  } catch {
+  } catch (error) {
+    unstable_rethrow(error)
     return { error: 'Some subjects are no longer available. Reload and try again.' }
   }
 }
