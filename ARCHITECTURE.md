@@ -89,7 +89,10 @@ the browser.
 ```
 prisma/
   schema.prisma            Models. User 1-M Subject, User 1-M ScheduleEvent,
-                           Subject 1-M ScheduleEvent.
+                           Subject 1-M ScheduleEvent, Subject 1-M SubjectItem,
+                           SubjectItem 1-M ScheduleEvent. SubjectItem relates
+                           to Subject on (subjectId, userId), so the database
+                           rejects an item under another user's subject.
   migrations/              Committed. Applied on deploy with migrate deploy.
   verify-isolation.ts      Executable proof of requirements 2 and 4.
 prisma.config.ts           Prisma 7 config: migration URL, seed command.
@@ -111,6 +114,7 @@ lib/
   data/
     schedule.ts            Event CRUD, all user-scoped.
     subjects.ts            Subject CRUD, all user-scoped.
+    items.ts               Subject item CRUD, all user-scoped.
     progress.ts            Progress and XP for the signed-in user, plus the
                            equipped avatar and season (cookie, re-validated).
     seed-templates.ts      Starter templates. Pure; takes a client argument.
@@ -118,6 +122,7 @@ lib/
   actions/
     auth.ts                Sign in, register, sign out.
     schedule.ts            Event create/update/delete/status.
+    items.ts               Create, edit, complete and delete subject items.
     scheduling.ts          Confirm, replace or clear a generated plan.
                            Completed blocks are never removed: they hold XP.
     rewards.ts             Equip an unlocked avatar or season.

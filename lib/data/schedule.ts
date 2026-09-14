@@ -42,6 +42,7 @@ const eventSelect = {
   recurrenceRule: true,
   generatedAt: true,
   subject: { select: { id: true, name: true, code: true, colorHex: true } },
+  item: { select: { id: true, title: true, type: true, dueDate: true } },
 } satisfies Prisma.ScheduleEventSelect
 
 export type ScheduleEventDTO = Prisma.ScheduleEventGetPayload<{
@@ -268,6 +269,8 @@ export async function deleteGeneratedInRange(from: Date, to: Date): Promise<numb
 
 export interface GeneratedEventInput {
   subjectId: string
+  /** The sub-item the block works on, if the planner scheduled one. */
+  itemId?: string | null
   title: string
   category: Category
   startsAt: Date
@@ -301,6 +304,20 @@ export async function replaceGeneratedEvents(
   })
   if (owned.length !== subjectIds.length) throw new Error('Subject not found')
 
+  // Item ids arrive from the browser too. Each must be this user's, and must
+  // sit in the subject the block claims, or a crafted payload could file one
+  // subject's block under another subject's item.
+  const itemIds = [...new Set(blocks.map((b) => b.itemId).filter((id): id is string => Boolean(id)))]
+  if (itemIds.length > 0) {
+    const items = await prisma.subjectItem.findMany({
+      where: { userId, id: { in: itemIds } },
+      select: { id: true, subjectId: true },
+    })
+    const subjectOfItem = new Map(items.map((item) => [item.id, item.subjectId]))
+    const mismatch = blocks.some((b) => b.itemId && subjectOfItem.get(b.itemId) !== b.subjectId)
+    if (items.length !== itemIds.length || mismatch) throw new Error('Item not found')
+  }
+
   const generatedAt = new Date()
   const shouldReplace = Boolean(options.replaceFrom && options.replaceTo)
 
@@ -322,6 +339,7 @@ export async function replaceGeneratedEvents(
       data: blocks.map((block) => ({
         userId,
         subjectId: block.subjectId,
+        itemId: block.itemId ?? null,
         title: block.title,
         category: block.category,
         startsAt: block.startsAt,

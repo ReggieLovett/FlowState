@@ -4,12 +4,26 @@ import { useActionState, useCallback, useEffect, useMemo, useRef, useState } fro
 import { useFormStatus } from 'react-dom'
 import {
   DEFAULT_PREFS,
+  ITEM_LABELS,
   addDaysISO,
-  planSchedule,
+  planCombined,
   toISODate,
+  type ItemKind,
+  type PlannedBlock,
+  type SchedulingItem,
   type SchedulingPrefs,
   type SchedulingSubject,
 } from '@/lib/scheduling'
+import {
+  PlanTimeline,
+  findIssues,
+  hhmm,
+  minutesOfDay,
+  placeBlock,
+  type DraftBlock,
+  type TimelineBusy,
+  type TimelineDeadline,
+} from './PlanTimeline'
 import {
   clearGeneratedAction,
   confirmScheduleAction,
@@ -36,6 +50,23 @@ export interface SerialEvent {
   isAllDay: boolean
   status: string
   isGenerated: boolean
+  /** The sub-item the block works on, if any. */
+  itemId?: string | null
+  title?: string
+}
+
+/** An open subject item, serialised for the planner. */
+export interface SerialItem {
+  id: string
+  subjectId: string
+  title: string
+  type: ItemKind
+  /** YYYY-MM-DD */
+  dueDate: string | null
+  estimatedMinutes: number | null
+  priority: number
+  /** Non-cancelled minutes already linked to the item, anywhere in time. */
+  bookedMinutes: number
 }
 
 type RangeKey = 'week' | 'fortnight' | 'month'
@@ -98,12 +129,19 @@ function labelForDate(iso: string): string {
  * migration. Every read is guarded because Safari's private mode throws on
  * access rather than returning null.
  */
-function loadPrefs(): SchedulingPrefs {
+type DialogPrefs = SchedulingPrefs & {
+  /** After items are planned, fill the rest of the daily goal with study blocks. */
+  fillStudyTime: boolean
+}
+
+const DEFAULT_DIALOG_PREFS: DialogPrefs = { ...DEFAULT_PREFS, fillStudyTime: true }
+
+function loadPrefs(): DialogPrefs {
   try {
     const raw = window.localStorage.getItem(PREFS_KEY)
-    if (!raw) return DEFAULT_PREFS
-    const parsed = JSON.parse(raw) as Partial<SchedulingPrefs>
-    const merged = { ...DEFAULT_PREFS, ...parsed }
+    if (!raw) return DEFAULT_DIALOG_PREFS
+    const parsed = JSON.parse(raw) as Partial<DialogPrefs>
+    const merged = { ...DEFAULT_DIALOG_PREFS, ...parsed }
     return {
       ...merged,
       studyDays: Array.isArray(merged.studyDays) && merged.studyDays.length > 0
@@ -111,11 +149,11 @@ function loadPrefs(): SchedulingPrefs {
         : DEFAULT_PREFS.studyDays,
     }
   } catch {
-    return DEFAULT_PREFS
+    return DEFAULT_DIALOG_PREFS
   }
 }
 
-function savePrefs(prefs: SchedulingPrefs) {
+function savePrefs(prefs: DialogPrefs) {
   try {
     window.localStorage.setItem(PREFS_KEY, JSON.stringify(prefs))
   } catch {
@@ -123,10 +161,23 @@ function savePrefs(prefs: SchedulingPrefs) {
   }
 }
 
-function ConfirmButton({ count, replacing }: { count: number; replacing: number }) {
+function ConfirmButton({
+  count,
+  replacing,
+  blocked = false,
+}: {
+  count: number
+  replacing: number
+  blocked?: boolean
+}) {
   const { pending } = useFormStatus()
   return (
-    <button type="submit" className="btn btn-primary" disabled={pending || count === 0}>
+    <button
+      type="submit"
+      className="btn btn-primary"
+      disabled={pending || count === 0 || blocked}
+      title={blocked ? 'Move the blocks that are in the past first' : undefined}
+    >
       {pending ? (
         <span className="spinner-border spinner-border-sm me-2" aria-hidden="true" />
       ) : (
@@ -223,12 +274,14 @@ export function GenerateScheduleDialog({
   onClose,
   subjects,
   events,
+  items = [],
   weekStartISO,
 }: {
   open: boolean
   onClose: () => void
   subjects: SerialSubject[]
   events: SerialEvent[]
+  items?: SerialItem[]
   weekStartISO: string
 }) {
   const dialogRef = useRef<HTMLDialogElement>(null)
@@ -254,6 +307,7 @@ export function GenerateScheduleDialog({
           onClose={onClose}
           subjects={subjects}
           events={events}
+          items={items}
           weekStartISO={weekStartISO}
         />
       )}
@@ -265,15 +319,29 @@ function PlanBody({
   onClose,
   subjects,
   events,
+  items,
   weekStartISO,
 }: {
   onClose: () => void
   subjects: SerialSubject[]
   events: SerialEvent[]
+  items: SerialItem[]
   weekStartISO: string
 }) {
-  const [range, setRange] = useState<RangeKey>('week')
-  const [prefs, setPrefs] = useState<SchedulingPrefs>(loadPrefs)
+  const [range, setRange] = useState<RangeKey>(() =>
+    // Work due beyond a week needs a longer view to be planned properly.
+    items.some((i) => i.dueDate && i.dueDate > addDaysISO(toISODate(new Date()), 6)) ? 'fortnight' : 'week',
+  )
+  const [prefs, setPrefs] = useState<DialogPrefs>(loadPrefs)
+  const [excludedItems, setExcludedItems] = useState<Set<string>>(() => new Set())
+  const [step, setStep] = useState<'settings' | 'review'>('settings')
+  const [draft, setDraft] = useState<{
+    base: string
+    blocks: DraftBlock[]
+    removed: DraftBlock[]
+    edited: boolean
+  } | null>(null)
+  const [selectedKey, setSelectedKey] = useState<string | null>(null)
   const [replace, setReplace] = useState(false)
   const [confirmState, confirmAction] = useActionState(
     confirmScheduleAction,
@@ -302,7 +370,7 @@ function PlanBody({
   }, [confirmState.ok, clearState.ok, onClose])
 
   const update = useCallback(
-    (patch: Partial<SchedulingPrefs>) => setPrefs((current) => ({ ...current, ...patch })),
+    (patch: Partial<DialogPrefs>) => setPrefs((current) => ({ ...current, ...patch })),
     [],
   )
 
@@ -369,39 +437,200 @@ function PlanBody({
     [included],
   )
 
-  const plan = useMemo(() => {
-    // With replace on, last run's blocks are about to disappear, so the planner
-    // must not treat their slots as taken or count them against the daily goal.
-    const visible = replace
-      ? parsedEvents.filter(
-          (event) =>
-            !(
-              event.isGenerated &&
-              event.status !== 'COMPLETED' &&
-              event.startsAt < rangeBounds.to &&
-              event.endsAt > rangeBounds.from
-            ),
-        )
-      : parsedEvents
+  const allSchedulingSubjects: SchedulingSubject[] = useMemo(
+    () =>
+      subjects.map((subject) => ({
+        ...subject,
+        examDate: subject.examDate ? examDay(subject.examDate) : null,
+      })),
+    [subjects],
+  )
 
-    return planSchedule(schedulingSubjects, visible, startDate, endDate, prefs, {
-      notBefore: todayIso,
-      notBeforeMinutes: now.getHours() * 60 + now.getMinutes(),
+  // With replace on, last run's blocks are about to disappear, so the planner
+  // must not treat their slots as taken or count them against the daily goal.
+  const visibleEvents = useMemo(() => {
+    if (!replace) return parsedEvents
+    const doomed = new Set(replaceable.map((e) => e.id))
+    return parsedEvents.filter((event) => !doomed.has(event.id))
+  }, [parsedEvents, replace, replaceable])
+
+  const schedulingItems: SchedulingItem[] = useMemo(() => {
+    const doomed = new Set(replace ? replaceable.map((e) => e.id) : [])
+    return items
+      .filter((item) => !excludedItems.has(item.id))
+      .map((item) => {
+        // Booked time that the replace is about to delete is not booked.
+        const leaving = parsedEvents
+          .filter((e) => e.itemId === item.id && doomed.has(e.id))
+          .reduce((sum, e) => sum + (e.endsAt.getTime() - e.startsAt.getTime()) / 60_000, 0)
+        const [y, m, d] = (item.dueDate ?? '').split('-').map(Number)
+        return {
+          ...item,
+          dueDate: item.dueDate ? new Date(y, m - 1, d) : null,
+          bookedMinutes: Math.max(0, item.bookedMinutes - leaving),
+        }
+      })
+  }, [items, excludedItems, parsedEvents, replace, replaceable])
+
+  const plan = useMemo(
+    () =>
+      planCombined(schedulingItems, allSchedulingSubjects, visibleEvents, startDate, endDate, prefs, {
+        notBefore: todayIso,
+        notBeforeMinutes: now.getHours() * 60 + now.getMinutes(),
+        fillStudyTime: prefs.fillStudyTime,
+        studySubjects: schedulingSubjects,
+      }),
+    [
+      schedulingItems,
+      allSchedulingSubjects,
+      visibleEvents,
+      startDate,
+      endDate,
+      prefs,
+      todayIso,
+      now,
+      schedulingSubjects,
+    ],
+  )
+
+  // ------------------------------------------------------------ draft -------
+  // Timeline edits live in a draft tied to the plan they were made on. If the
+  // settings change, the plan changes, the draft no longer matches, and the
+  // fresh plan wins; the review step says so rather than silently mixing the two.
+  const planSignature = useMemo(
+    () =>
+      plan.blocks
+        .map((b) => `${b.itemId ?? b.subjectId}@${b.startsAt.getTime()}-${b.endsAt.getTime()}`)
+        .join('|'),
+    [plan.blocks],
+  )
+  const draftCurrent = draft && draft.base === planSignature ? draft : null
+  const rebuilt = Boolean(draft?.edited && !draftCurrent)
+  const activeBlocks: PlannedBlock[] = draftCurrent ? draftCurrent.blocks : plan.blocks
+
+  const rangeDays = useMemo(() => {
+    const out: string[] = []
+    for (let d = startDate; d <= endDate; d = addDaysISO(d, 1)) out.push(d)
+    return out
+  }, [startDate, endDate])
+
+  const busy: TimelineBusy[] = useMemo(
+    () =>
+      visibleEvents
+        .filter((e) => e.status !== 'CANCELLED' && e.startsAt < rangeBounds.to && e.endsAt > rangeBounds.from)
+        .map((e) => {
+          const start = e.isAllDay ? 0 : minutesOfDay(e.startsAt)
+          const rawEnd = e.isAllDay ? 24 * 60 : minutesOfDay(e.endsAt)
+          return {
+            key: e.id,
+            date: toISODate(e.startsAt),
+            start,
+            end: rawEnd <= start ? 24 * 60 : rawEnd,
+            title: e.title ?? 'Busy',
+          }
+        }),
+    [visibleEvents, rangeBounds],
+  )
+
+  const subjectColor = useMemo(() => new Map(subjects.map((s) => [s.id, s.colorHex])), [subjects])
+  const deadlines: TimelineDeadline[] = useMemo(
+    () =>
+      schedulingItems
+        .filter((i) => i.dueDate)
+        .map((i) => ({
+          itemId: i.id,
+          date: toISODate(i.dueDate!),
+          title: i.title,
+          type: i.type,
+          color: subjectColor.get(i.subjectId) ?? '#868E96',
+        }))
+        .filter((d) => d.date >= startDate && d.date <= endDate),
+    [schedulingItems, subjectColor, startDate, endDate],
+  )
+  const dueByItem = useMemo(
+    () =>
+      Object.fromEntries(
+        schedulingItems.filter((i) => i.dueDate).map((i) => [i.id, { date: toISODate(i.dueDate!), type: i.type }]),
+      ),
+    [schedulingItems],
+  )
+  const studyWindow = { start: prefs.dayStartHour * 60, end: prefs.dayEndHour * 60 }
+  const issues = findIssues(draftCurrent?.blocks ?? [], busy, dueByItem, studyWindow, now)
+  const issueCounts = [...issues.values()].reduce(
+    (acc, i) => ({
+      clash: acc.clash + (i.clash || i.overlap ? 1 : 0),
+      late: acc.late + (i.late ? 1 : 0),
+      past: acc.past + (i.past ? 1 : 0),
+      outside: acc.outside + (i.outside ? 1 : 0),
+    }),
+    { clash: 0, late: 0, past: 0, outside: 0 },
+  )
+
+  function openReview() {
+    if (!draftCurrent) {
+      setDraft({
+        base: planSignature,
+        blocks: plan.blocks.map((b, i) => ({ ...b, key: `${i}-${b.startsAt.getTime()}` })),
+        removed: [],
+        edited: false,
+      })
+      setSelectedKey(null)
+    }
+    setStep('review')
+  }
+
+  function editDraft(change: (d: NonNullable<typeof draft>) => NonNullable<typeof draft>) {
+    setDraft((current) => (current ? { ...change(current), edited: true } : current))
+  }
+
+  const moveBlock = (key: string, date: string, start: number, end: number) =>
+    editDraft((d) => ({ ...d, blocks: d.blocks.map((b) => (b.key === key ? placeBlock(b, date, start, end) : b)) }))
+
+  const removeBlock = (key: string) => {
+    editDraft((d) => {
+      const gone = d.blocks.find((b) => b.key === key)
+      return gone ? { ...d, blocks: d.blocks.filter((b) => b.key !== key), removed: [...d.removed, gone] } : d
     })
-  }, [
-    schedulingSubjects,
-    parsedEvents,
-    replace,
-    rangeBounds,
-    startDate,
-    endDate,
-    prefs,
-    todayIso,
-    now,
-  ])
+    setSelectedKey(null)
+  }
+
+  const restoreBlock = (key: string) =>
+    editDraft((d) => {
+      const back = d.removed.find((b) => b.key === key)
+      return back ? { ...d, removed: d.removed.filter((b) => b.key !== key), blocks: [...d.blocks, back] } : d
+    })
+
+  const resetDraft = () => {
+    setDraft({
+      base: planSignature,
+      blocks: plan.blocks.map((b, i) => ({ ...b, key: `${i}-${b.startsAt.getTime()}` })),
+      removed: [],
+      edited: false,
+    })
+    setSelectedKey(null)
+  }
+
+  const selected = draftCurrent?.blocks.find((b) => b.key === selectedKey) ?? null
+
+  // Time split and day list read from whatever will actually be saved.
+  const splitBySubject = useMemo(() => {
+    const total = activeBlocks.reduce((sum, b) => sum + b.duration, 0)
+    const bySubject = new Map<string, number>()
+    for (const b of activeBlocks) bySubject.set(b.subjectId, (bySubject.get(b.subjectId) ?? 0) + b.duration)
+    return { total, bySubject }
+  }, [activeBlocks])
+
+  const byDay = useMemo(
+    () =>
+      rangeDays
+        .map((date) => ({ date, blocks: activeBlocks.filter((b) => b.date === date) }))
+        .filter((d) => d.blocks.length > 0 || prefs.studyDays.includes(new Date(`${d.date}T12:00`).getDay())),
+    [rangeDays, activeBlocks, prefs.studyDays],
+  )
+  const activeDays = byDay.filter((d) => d.blocks.length > 0).length
 
   const error = confirmState.error ?? clearState.error
-  const maxPriority = Math.max(1, ...plan.scored.map((s) => s.priorityScore))
+  const maxPriority = Math.max(1, ...plan.study.scored.map((s) => s.priorityScore))
 
   // The plan travels in a hidden field that always holds the current preview.
   //
@@ -417,9 +646,10 @@ function PlanBody({
         replace,
         rangeStart: rangeBounds.from.toISOString(),
         rangeEnd: rangeBounds.to.toISOString(),
-        blocks: plan.blocks.map((block) => ({
+        blocks: activeBlocks.map((block) => ({
           subjectId: block.subjectId,
-          title: `${block.subjectName} · Focus block`,
+          itemId: block.itemId,
+          title: block.title,
           // Study time, not the subject's own type: a revision block for a
           // lecture course is not a lecture.
           category: 'DEEP_WORK_SHIFT',
@@ -427,7 +657,7 @@ function PlanBody({
           endsAt: block.endsAt.toISOString(),
         })),
       }),
-    [plan.blocks, replace, rangeBounds],
+    [activeBlocks, replace, rangeBounds],
   )
 
   return (
@@ -436,10 +666,15 @@ function PlanBody({
         <div className="min-width-0">
           <h2 className="h6 fw-semibold mb-0 d-flex align-items-center gap-2">
             <i className="bi bi-stars text-primary" aria-hidden="true" />
-            Generate a study plan
+            {step === 'review' ? 'Review and adjust your plan' : 'Generate a study plan'}
           </h2>
           <p className="text-secondary mb-0 tnum" style={{ fontSize: '0.75rem' }}>
-            {labelForDate(startDate)} to {labelForDate(endDate)}
+            {labelForDate(startDate)} to {labelForDate(endDate)} ·{' '}
+            <span className="plan-steps">
+              <span className={step === 'settings' ? 'is-current' : undefined}>1 Settings</span>
+              <i className="bi bi-chevron-right" aria-hidden="true" />
+              <span className={step === 'review' ? 'is-current' : undefined}>2 Review</span>
+            </span>
           </p>
         </div>
         <button type="button" className="btn-close" aria-label="Close" onClick={onClose} />
@@ -457,6 +692,182 @@ function PlanBody({
             Add subjects with difficulty ratings and exam dates first. The planner
             uses those to decide who gets your time.
           </p>
+        ) : step === 'review' && draftCurrent ? (
+          <div className="plan-review p-3 p-lg-4 d-flex flex-column gap-3">
+            {rebuilt && (
+              <div className="alert alert-info py-2 px-3 small mb-0" role="status">
+                The settings changed, so the plan was rebuilt and earlier timeline edits were replaced.
+              </div>
+            )}
+
+            <div className="d-flex flex-wrap align-items-center justify-content-between gap-2">
+              <div className="small text-secondary">
+                <i className="bi bi-arrows-move me-1" aria-hidden="true" />
+                Drag a block to another time or day, drag its right edge to resize, or select it and
+                use the arrow keys.
+              </div>
+              <div className="d-flex flex-wrap gap-2 small" role="status">
+                <span className="chip tnum">
+                  {activeBlocks.length} blocks · {formatDuration(splitBySubject.total)}
+                </span>
+                {issueCounts.clash > 0 && (
+                  <span className="plan-issue is-error">
+                    <i className="bi bi-exclamation-octagon me-1" aria-hidden="true" />
+                    {issueCounts.clash} {issueCounts.clash === 1 ? 'clash' : 'clashes'}
+                  </span>
+                )}
+                {issueCounts.past > 0 && (
+                  <span className="plan-issue is-error">
+                    <i className="bi bi-clock-history me-1" aria-hidden="true" />
+                    {issueCounts.past} in the past
+                  </span>
+                )}
+                {issueCounts.late > 0 && (
+                  <span className="plan-issue is-warn">
+                    <i className="bi bi-flag me-1" aria-hidden="true" />
+                    {issueCounts.late} after a deadline
+                  </span>
+                )}
+                {issueCounts.outside > 0 && (
+                  <span className="plan-issue is-warn">
+                    <i className="bi bi-moon me-1" aria-hidden="true" />
+                    {issueCounts.outside} outside study hours
+                  </span>
+                )}
+              </div>
+            </div>
+
+            <div className="plan-timeline-scroll">
+              <PlanTimeline
+                days={rangeDays}
+                blocks={draftCurrent.blocks}
+                busy={busy}
+                deadlines={deadlines}
+                issues={issues}
+                studyDays={prefs.studyDays}
+                studyWindow={studyWindow}
+                now={now}
+                selectedKey={selectedKey}
+                onSelect={setSelectedKey}
+                onMove={moveBlock}
+                onRemove={removeBlock}
+              />
+            </div>
+
+            <div className="row g-3">
+              <div className="col-12 col-lg-8">
+                {selected ? (
+                  <div className="plan-selected card card-body py-3">
+                    <div className="d-flex align-items-start justify-content-between gap-2 mb-2">
+                      <div className="min-width-0">
+                        <div className="small fw-semibold text-truncate d-flex align-items-center gap-2">
+                          <span className="category-dot" style={{ ['--dot-color' as string]: selected.subjectColor }} aria-hidden="true" />
+                          {selected.title}
+                        </div>
+                        <div className="text-secondary" style={{ fontSize: '0.75rem' }}>
+                          {selected.subjectName}
+                          {selected.itemType ? ` · ${ITEM_LABELS[selected.itemType].label}` : ' · Study time'}
+                          {selected.itemId && dueByItem[selected.itemId]
+                            ? ` · due ${labelForDate(dueByItem[selected.itemId].date)}`
+                            : ''}
+                        </div>
+                      </div>
+                      <button
+                        type="button"
+                        className="btn btn-sm btn-outline-danger flex-shrink-0"
+                        onClick={() => removeBlock(selected.key)}
+                      >
+                        <i className="bi bi-x-lg me-1" aria-hidden="true" />
+                        Remove
+                      </button>
+                    </div>
+                    <div className="row g-2">
+                      <div className="col-12 col-sm-5">
+                        <label htmlFor="sel-day" className="form-label small fw-medium mb-1">Day</label>
+                        <select
+                          id="sel-day"
+                          className="form-select form-select-sm"
+                          value={selected.date}
+                          onChange={(e) => {
+                            const start = minutesOfDay(selected.startsAt)
+                            moveBlock(selected.key, e.target.value, start, start + selected.duration)
+                          }}
+                        >
+                          {rangeDays.map((d) => (
+                            <option key={d} value={d}>
+                              {labelForDate(d)}
+                            </option>
+                          ))}
+                        </select>
+                      </div>
+                      <div className="col-6 col-sm-4">
+                        <label htmlFor="sel-start" className="form-label small fw-medium mb-1">Start</label>
+                        <input
+                          id="sel-start"
+                          type="time"
+                          step={900}
+                          className="form-control form-control-sm tnum"
+                          value={hhmm(minutesOfDay(selected.startsAt))}
+                          onChange={(e) => {
+                            const [h, m] = e.target.value.split(':').map(Number)
+                            if (!Number.isFinite(h) || !Number.isFinite(m)) return
+                            const start = Math.min(24 * 60 - selected.duration, h * 60 + m)
+                            moveBlock(selected.key, selected.date, start, start + selected.duration)
+                          }}
+                        />
+                      </div>
+                      <div className="col-6 col-sm-3">
+                        <label htmlFor="sel-length" className="form-label small fw-medium mb-1">Length</label>
+                        <select
+                          id="sel-length"
+                          className="form-select form-select-sm tnum"
+                          value={selected.duration}
+                          onChange={(e) => {
+                            const start = minutesOfDay(selected.startsAt)
+                            const length = Number(e.target.value)
+                            moveBlock(selected.key, selected.date, start, Math.min(24 * 60, start + length))
+                          }}
+                        >
+                          {Array.from(new Set([...Array.from({ length: 16 }, (_, i) => (i + 1) * 15), selected.duration]))
+                            .sort((a, b) => a - b)
+                            .map((minutes) => (
+                              <option key={minutes} value={minutes}>
+                                {formatDuration(minutes)}
+                              </option>
+                            ))}
+                        </select>
+                      </div>
+                    </div>
+                  </div>
+                ) : (
+                  <p className="text-secondary small mb-0 plan-selected-empty">
+                    Select a block to change its day, start time or length precisely, or to remove it.
+                  </p>
+                )}
+              </div>
+
+              <div className="col-12 col-lg-4">
+                {draftCurrent.removed.length > 0 && (
+                  <div className="plan-removed">
+                    <div className="small fw-semibold mb-1">Removed from the plan</div>
+                    <ul className="list-unstyled mb-0 d-flex flex-column gap-1">
+                      {draftCurrent.removed.map((b) => (
+                        <li key={b.key} className="d-flex align-items-center justify-content-between gap-2 small">
+                          <span className="text-truncate">
+                            <span className="category-dot me-1" style={{ ['--dot-color' as string]: b.subjectColor }} aria-hidden="true" />
+                            {b.title}
+                          </span>
+                          <button type="button" className="btn btn-sm btn-link p-0 flex-shrink-0" onClick={() => restoreBlock(b.key)}>
+                            Restore
+                          </button>
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
+              </div>
+            </div>
+          </div>
         ) : (
           <div className="row g-0">
             {/* ------------------------------------------------ settings --- */}
@@ -627,6 +1038,25 @@ function PlanBody({
                     className="form-check-input"
                     type="checkbox"
                     role="switch"
+                    id="plan-fill"
+                    checked={prefs.fillStudyTime}
+                    onChange={(event) => update({ fillStudyTime: event.target.checked })}
+                  />
+                  <label className="form-check-label small" htmlFor="plan-fill">
+                    Fill spare time with study blocks
+                    <span className="d-block text-secondary" style={{ fontSize: '0.75rem' }}>
+                      {prefs.fillStudyTime
+                        ? 'Tasks and exams go first, then general study time up to your daily goal.'
+                        : 'Only tasks, assignments, projects and exams are scheduled.'}
+                    </span>
+                  </label>
+                </div>
+
+                <div className="form-check form-switch mb-0">
+                  <input
+                    className="form-check-input"
+                    type="checkbox"
+                    role="switch"
                     id="plan-replace"
                     checked={replace}
                     disabled={replaceable.length === 0}
@@ -653,38 +1083,130 @@ function PlanBody({
                   <div className="d-flex align-items-baseline justify-content-between gap-2 mb-2">
                     <h3 className="h6 fw-semibold mb-0">Time split</h3>
                     <span className="text-secondary tnum" style={{ fontSize: '0.75rem' }}>
-                      {formatDuration(plan.totalMinutes)} · {plan.totalBlocks} blocks ·{' '}
-                      {plan.days} {plan.days === 1 ? 'day' : 'days'}
+                      {formatDuration(splitBySubject.total)} · {activeBlocks.length} blocks ·{' '}
+                      {activeDays} {activeDays === 1 ? 'day' : 'days'}
                     </span>
                   </div>
 
-                  {plan.totalBlocks > 0 && (
-                    <div className="plan-bar mb-3" aria-hidden="true">
-                      {plan.bySubject
-                        .filter((entry) => entry.minutes > 0)
-                        .map((entry) => (
+                  {activeBlocks.length > 0 ? (
+                    <div className="plan-bar" aria-hidden="true">
+                      {subjects
+                        .filter((subject) => splitBySubject.bySubject.get(subject.id))
+                        .map((subject) => (
                           <span
-                            key={entry.subject.id}
+                            key={subject.id}
                             style={{
-                              width: `${entry.share * 100}%`,
-                              background: entry.subject.colorHex,
+                              width: `${((splitBySubject.bySubject.get(subject.id) ?? 0) / splitBySubject.total) * 100}%`,
+                              background: subject.colorHex,
                             }}
                           />
                         ))}
                     </div>
+                  ) : (
+                    <p className="text-secondary small mb-0">
+                      Nothing to plan yet. Tick a subject or an item below.
+                    </p>
                   )}
+                </section>
+
+                {items.length > 0 && (
+                  <section>
+                    <div className="d-flex align-items-baseline justify-content-between gap-2 mb-2">
+                      <h3 className="h6 fw-semibold mb-0">Tasks and deadlines</h3>
+                      <span className="text-secondary" style={{ fontSize: '0.75rem' }}>
+                        Earliest deadline first
+                      </span>
+                    </div>
+                    <ul className="list-unstyled mb-0 d-flex flex-column">
+                      {items.map((item) => {
+                        const isIncluded = !excludedItems.has(item.id)
+                        const entry = plan.items.entries.find((e) => e.item.id === item.id)
+                        const subject = subjects.find((s) => s.id === item.subjectId)
+                        const inputId = `plan-item-${item.id}`
+                        const status = !isIncluded
+                          ? 'skipped'
+                          : !entry
+                            ? 'subject unavailable'
+                            : entry.neededMinutes === 0
+                              ? 'already booked'
+                              : `${entry.sessions} ${entry.sessions === 1 ? 'session' : 'sessions'} · ${formatDuration(entry.plannedMinutes)}`
+
+                        return (
+                          <li key={item.id} className="plan-subject">
+                            <div className="d-flex align-items-start gap-2">
+                              <input
+                                className="form-check-input mt-1 flex-shrink-0"
+                                type="checkbox"
+                                id={inputId}
+                                checked={isIncluded}
+                                onChange={() =>
+                                  setExcludedItems((current) => {
+                                    const next = new Set(current)
+                                    if (next.has(item.id)) next.delete(item.id)
+                                    else next.add(item.id)
+                                    return next
+                                  })
+                                }
+                              />
+                              <label htmlFor={inputId} className={`flex-grow-1 min-width-0 ${isIncluded ? '' : 'opacity-50'}`}>
+                                <span className="d-flex align-items-baseline gap-2">
+                                  <i className={`bi ${ITEM_LABELS[item.type].icon} text-secondary`} aria-hidden="true" />
+                                  <span className="small fw-medium text-truncate flex-grow-1">{item.title}</span>
+                                  <span className="text-secondary tnum flex-shrink-0" style={{ fontSize: '0.75rem' }}>
+                                    {status}
+                                  </span>
+                                </span>
+                                <span className="d-flex align-items-center flex-wrap gap-2 mt-1">
+                                  {subject && (
+                                    <span className="d-inline-flex align-items-center gap-1 text-secondary" style={{ fontSize: '0.75rem' }}>
+                                      <span className="category-dot" style={{ ['--dot-color' as string]: subject.colorHex }} aria-hidden="true" />
+                                      {subject.name}
+                                    </span>
+                                  )}
+                                  <span className="chip">{ITEM_LABELS[item.type].label}</span>
+                                  {item.dueDate && (
+                                    <span className={`chip${entry?.overdue ? ' is-danger' : ''}`}>
+                                      {entry?.overdue ? 'Overdue · ' : item.type === 'EXAM' ? 'Exam ' : 'Due '}
+                                      {labelForDate(item.dueDate)}
+                                    </span>
+                                  )}
+                                  {entry && (
+                                    <span className="chip tnum" title={entry.estimated ? 'Suggested from type and difficulty' : 'Your estimate'}>
+                                      {formatDuration(entry.effortMinutes)} {entry.estimated ? 'suggested' : 'effort'}
+                                    </span>
+                                  )}
+                                  {entry && entry.unplacedMinutes > 0 && (
+                                    <span className="chip is-danger">{formatDuration(entry.unplacedMinutes)} won&apos;t fit</span>
+                                  )}
+                                </span>
+                              </label>
+                            </div>
+                          </li>
+                        )
+                      })}
+                    </ul>
+                  </section>
+                )}
+
+                <section className={prefs.fillStudyTime ? undefined : 'opacity-50'}>
+                  <div className="d-flex align-items-baseline justify-content-between gap-2 mb-2">
+                    <h3 className="h6 fw-semibold mb-0">Study time</h3>
+                    <span className="text-secondary" style={{ fontSize: '0.75rem' }}>
+                      {prefs.fillStudyTime ? 'Fills the rest of each daily goal' : 'Off'}
+                    </span>
+                  </div>
 
                   <ul className="list-unstyled mb-0 d-flex flex-column gap-2">
                     {included.length === 0 && (
                       <li className="text-secondary small">
-                        Every subject is unticked. Tick one to build a plan.
+                        Every subject is unticked for study time.
                       </li>
                     )}
 
                     {subjects.map((subject) => {
                       const isIncluded = !excluded.has(subject.id)
-                      const scored = plan.scored.find((s) => s.id === subject.id)
-                      const entry = plan.bySubject.find((s) => s.subject.id === subject.id)
+                      const scored = plan.study.scored.find((s) => s.id === subject.id)
+                      const entry = plan.study.bySubject.find((s) => s.subject.id === subject.id)
                       const inputId = `plan-subject-${subject.id}`
 
                       return (
@@ -695,6 +1217,7 @@ function PlanBody({
                               type="checkbox"
                               id={inputId}
                               checked={isIncluded}
+                              disabled={!prefs.fillStudyTime}
                               onChange={() =>
                                 setExcluded((current) => {
                                   const next = new Set(current)
@@ -704,31 +1227,19 @@ function PlanBody({
                                 })
                               }
                             />
-                            <label
-                              htmlFor={inputId}
-                              className={`flex-grow-1 min-width-0 ${
-                                isIncluded ? '' : 'opacity-50'
-                              }`}
-                            >
+                            <label htmlFor={inputId} className={`flex-grow-1 min-width-0 ${isIncluded ? '' : 'opacity-50'}`}>
                               <span className="d-flex align-items-baseline gap-2">
                                 <span
                                   className="category-dot"
                                   style={{ ['--dot-color' as string]: subject.colorHex }}
                                   aria-hidden="true"
                                 />
-                                <span className="small fw-medium text-truncate flex-grow-1">
-                                  {subject.name}
-                                </span>
-                                <span
-                                  className="text-secondary tnum flex-shrink-0"
-                                  style={{ fontSize: '0.75rem' }}
-                                >
+                                <span className="small fw-medium text-truncate flex-grow-1">{subject.name}</span>
+                                <span className="text-secondary tnum flex-shrink-0" style={{ fontSize: '0.75rem' }}>
                                   {entry && entry.minutes > 0
-                                    ? `${formatDuration(entry.minutes)} · ${entry.blocks} ${
-                                        entry.blocks === 1 ? 'block' : 'blocks'
-                                      }`
-                                    : isIncluded
-                                      ? 'no time'
+                                    ? `${formatDuration(entry.minutes)} · ${entry.blocks} ${entry.blocks === 1 ? 'block' : 'blocks'}`
+                                    : isIncluded && prefs.fillStudyTime
+                                      ? 'no spare time'
                                       : 'skipped'}
                                 </span>
                               </span>
@@ -761,20 +1272,36 @@ function PlanBody({
                 </section>
 
                 <section>
-                  <h3 className="h6 fw-semibold mb-2">Day by day</h3>
+                  <div className="d-flex align-items-baseline justify-content-between gap-2 mb-2">
+                    <h3 className="h6 fw-semibold mb-0">Day by day</h3>
+                    {activeBlocks.length > 0 && (
+                      <button type="button" className="btn btn-link btn-sm p-0" onClick={openReview}>
+                        Adjust on the timeline
+                      </button>
+                    )}
+                  </div>
+                  {draftCurrent?.edited && (
+                    <p className="small text-secondary mb-2">
+                      <i className="bi bi-pencil me-1" aria-hidden="true" />
+                      Includes your timeline edits.
+                    </p>
+                  )}
+                  {rebuilt && step === 'settings' && (
+                    <p className="small text-secondary mb-2">
+                      <i className="bi bi-arrow-repeat me-1" aria-hidden="true" />
+                      Settings changed, so earlier timeline edits no longer apply.
+                    </p>
+                  )}
 
-                  {plan.byDay.length === 0 ? (
+                  {byDay.length === 0 ? (
                     <p className="text-secondary small mb-0 py-3 text-center border rounded">
                       No study days in this range. Add days of the week on the left.
                     </p>
                   ) : (
                     <ul className="list-unstyled mb-0 d-flex flex-column gap-2 plan-days">
-                      {plan.byDay.map((day) => (
+                      {byDay.map((day) => (
                         <li key={day.date} className="d-flex align-items-start gap-3">
-                          <span
-                            className="text-secondary small tnum flex-shrink-0 pt-1"
-                            style={{ width: '5.5rem' }}
-                          >
+                          <span className="text-secondary small tnum flex-shrink-0 pt-1" style={{ width: '5.5rem' }}>
                             {labelForDate(day.date)}
                           </span>
                           {day.blocks.length === 0 ? (
@@ -785,13 +1312,14 @@ function PlanBody({
                             <span className="d-flex flex-wrap gap-1">
                               {day.blocks.map((block) => (
                                 <span
-                                  key={`${block.date}-${block.startTime}`}
-                                  className="plan-block"
+                                  key={`${block.date}-${block.startTime}-${block.itemId ?? block.subjectId}`}
+                                  className={`plan-block${block.overGoal ? ' is-over' : ''}`}
                                   style={{ ['--block-color' as string]: block.subjectColor }}
-                                  title={`${block.startTime} to ${block.endTime} · ${block.subjectName}`}
+                                  title={`${block.startTime} to ${block.endTime} · ${block.title}${block.overGoal ? ' · past your daily goal to meet a deadline' : ''}`}
                                 >
                                   <span className="tnum">{block.startTime}</span>
-                                  <span className="text-truncate">{block.subjectName}</span>
+                                  {block.itemType && <i className={`bi ${ITEM_LABELS[block.itemType].icon}`} aria-hidden="true" />}
+                                  <span className="text-truncate">{block.itemTitle ?? block.subjectName}</span>
                                 </span>
                               ))}
                             </span>
@@ -822,20 +1350,46 @@ function PlanBody({
       </div>
 
       <div className="d-flex flex-wrap justify-content-between gap-2 border-top px-4 py-3 bg-body-tertiary">
-        <form action={clearAction}>
-          <input type="hidden" name="rangeStart" value={rangeBounds.from.toISOString()} />
-          <input type="hidden" name="rangeEnd" value={rangeBounds.to.toISOString()} />
-          <ClearButton count={replaceable.length} />
-        </form>
+        {step === 'review' ? (
+          <div className="d-flex gap-2">
+            <button type="button" className="btn btn-outline-secondary" onClick={() => setStep('settings')}>
+              <i className="bi bi-arrow-left me-1" aria-hidden="true" />
+              <span className="d-none d-sm-inline">Settings</span>
+            </button>
+            <button
+              type="button"
+              className="btn btn-outline-secondary"
+              onClick={resetDraft}
+              disabled={!draftCurrent?.edited}
+              title="Undo every timeline edit"
+            >
+              <i className="bi bi-arrow-counterclockwise" aria-hidden="true" />
+              <span className="d-none d-sm-inline ms-1">Reset</span>
+            </button>
+          </div>
+        ) : (
+          <form action={clearAction}>
+            <input type="hidden" name="rangeStart" value={rangeBounds.from.toISOString()} />
+            <input type="hidden" name="rangeEnd" value={rangeBounds.to.toISOString()} />
+            <ClearButton count={replaceable.length} />
+          </form>
+        )}
 
         <form action={confirmAction} className="d-flex gap-2 ms-auto">
           <input type="hidden" name="payload" value={payload} />
-          <button type="button" className="btn btn-outline-secondary" onClick={onClose}>
+          <button type="button" className="btn btn-outline-secondary d-none d-sm-inline-block" onClick={onClose}>
             Cancel
           </button>
+          {step === 'settings' && activeBlocks.length > 0 && (
+            <button type="button" className="btn btn-outline-primary" onClick={openReview}>
+              <i className="bi bi-arrows-move me-1" aria-hidden="true" />
+              Review
+            </button>
+          )}
           <ConfirmButton
-            count={plan.totalBlocks}
+            count={activeBlocks.length}
             replacing={replace ? replaceable.length : 0}
+            blocked={step === 'review' && issueCounts.past > 0}
           />
         </form>
       </div>

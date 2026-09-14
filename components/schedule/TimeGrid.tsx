@@ -9,7 +9,9 @@ import {
   type KeyboardEvent,
   type PointerEvent,
 } from 'react'
+import Link from 'next/link'
 import { CATEGORY_META } from '@/lib/categories'
+import { ITEM_LABELS, type ItemKind } from '@/lib/scheduling'
 import { moveEventAction } from '@/lib/actions/schedule'
 import type { ScheduleEventDTO } from '@/lib/data/schedule'
 import { CompleteToggle } from './CompleteToggle'
@@ -26,6 +28,18 @@ import { EventFormModal, type SubjectOption } from './EventFormModal'
  * is dragging in, so the event layer mounts after hydration rather than
  * risking a server-rendered position that disagrees with the client's.
  */
+
+/** An item deadline, drawn in the all-day row of its day. */
+export interface GridDeadline {
+  itemId: string
+  subjectId: string
+  /** Local YYYY-MM-DD. */
+  date: string
+  title: string
+  type: ItemKind
+  color: string
+  done: boolean
+}
 
 export interface GridDay {
   /** Local YYYY-MM-DD. */
@@ -99,6 +113,9 @@ function layoutDay(items: Omit<Segment, 'lane' | 'lanes'>[]): Segment[] {
   return out
 }
 
+/** The fields a drag reads, shared by React's and the DOM's pointer events. */
+type PointerPoint = { clientX: number; clientY: number; pointerId: number }
+
 interface DragState {
   id: string
   mode: 'move' | 'resize'
@@ -127,10 +144,12 @@ export function TimeGrid({
   days,
   events,
   subjects,
+  deadlines = [],
 }: {
   days: GridDay[]
   events: ScheduleEventDTO[]
   subjects: SubjectOption[]
+  deadlines?: GridDeadline[]
 }) {
   const mounted = useSyncExternalStore(noopSubscribe, () => true, () => false)
   const minuteTick = useSyncExternalStore(
@@ -236,12 +255,6 @@ export function TimeGrid({
     if (!column) return
     if (mode === 'resize') e.stopPropagation()
 
-    try {
-      e.currentTarget.setPointerCapture(e.pointerId)
-    } catch {
-      // The pointer can already be gone (a fast tap, a cancelled touch). The
-      // drag still works while the cursor stays over the block.
-    }
     dragRef.current = {
       id: segment.event.id,
       mode,
@@ -256,9 +269,33 @@ export function TimeGrid({
       event: segment.event,
       preview: { dayIndex, start: segment.start, end: segment.end },
     }
+
+    // Track the pointer on the window for the rest of the gesture. The dragged
+    // block is re-rendered as a preview (in another column, for a day change),
+    // which unmounts the element the pointer went down on and releases its
+    // pointer capture. Element listeners then only saw moves while the cursor
+    // happened to be over the preview, and a release anywhere else left the
+    // drag stuck.
+    const onMove = (ev: globalThis.PointerEvent) => moveDrag(ev)
+    const onUp = (ev: globalThis.PointerEvent) => {
+      detach()
+      endDrag(ev)
+    }
+    const onCancel = () => {
+      detach()
+      cancelDrag()
+    }
+    const detach = () => {
+      window.removeEventListener('pointermove', onMove)
+      window.removeEventListener('pointerup', onUp)
+      window.removeEventListener('pointercancel', onCancel)
+    }
+    window.addEventListener('pointermove', onMove)
+    window.addEventListener('pointerup', onUp)
+    window.addEventListener('pointercancel', onCancel)
   }
 
-  function moveDrag(e: PointerEvent<HTMLElement>) {
+  function moveDrag(e: PointerPoint) {
     const drag = dragRef.current
     if (!drag || drag.pointerId !== e.pointerId) return
 
@@ -285,7 +322,7 @@ export function TimeGrid({
     setPreview({ id: drag.id, ...next })
   }
 
-  function endDrag(e: PointerEvent<HTMLElement>) {
+  function endDrag(e: PointerPoint) {
     const drag = dragRef.current
     if (!drag || drag.pointerId !== e.pointerId) return
     dragRef.current = null
@@ -363,9 +400,6 @@ export function TimeGrid({
           type="button"
           className="tg-block-main"
           onPointerDown={(e) => beginDrag(e, segment, dayIndex, 'move')}
-          onPointerMove={moveDrag}
-          onPointerUp={endDrag}
-          onPointerCancel={cancelDrag}
           onClick={() => {
             if (suppressClick.current) {
               suppressClick.current = false
@@ -378,7 +412,11 @@ export function TimeGrid({
           style={{ cursor: segment.movable ? 'grab' : 'pointer' }}
         >
           <span className="tg-block-time">
-            {event.generatedAt && <i className="bi bi-stars me-1" aria-hidden="true" />}
+            {event.item ? (
+              <i className={`bi ${ITEM_LABELS[event.item.type].icon} me-1`} aria-hidden="true" />
+            ) : (
+              event.generatedAt && <i className="bi bi-stars me-1" aria-hidden="true" />
+            )}
             {compact ? minutesLabel(start) : timeText}
           </span>
           <span className="tg-block-title">{event.title}</span>
@@ -397,9 +435,6 @@ export function TimeGrid({
           <span
             className="tg-resize"
             onPointerDown={(e) => beginDrag(e, segment, dayIndex, 'resize')}
-            onPointerMove={moveDrag}
-            onPointerUp={endDrag}
-            onPointerCancel={cancelDrag}
             aria-hidden="true"
           />
         )}
@@ -434,11 +469,25 @@ export function TimeGrid({
             ))}
           </div>
 
-          {mounted && allDayByDay.some((list) => list.length > 0) && (
+          {mounted && (allDayByDay.some((list) => list.length > 0) || deadlines.length > 0) && (
             <div className="tg-allday">
               <div className="tg-gutter tg-allday-label">All day</div>
               {allDayByDay.map((list, i) => (
                 <div key={days[i].iso} className="tg-allday-cell">
+                  {deadlines
+                    .filter((d) => d.date === days[i].iso)
+                    .map((d) => (
+                      <Link
+                        key={d.itemId}
+                        href={`/dashboard/subjects#subject-${d.subjectId}`}
+                        className={`tg-deadline${d.done ? ' is-done' : ''}`}
+                        style={{ ['--event-color' as string]: d.color }}
+                        title={`${ITEM_LABELS[d.type].label} ${d.type === 'EXAM' ? 'on' : 'due'} ${days[i].label}: ${d.title}`}
+                      >
+                        <i className={`bi ${d.type === 'EXAM' ? 'bi-mortarboard-fill' : 'bi-flag-fill'} me-1`} aria-hidden="true" />
+                        {d.title}
+                      </Link>
+                    ))}
                   {list.map((event) => (
                     <button
                       key={event.id}

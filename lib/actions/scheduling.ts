@@ -27,6 +27,7 @@ const CATEGORIES = Object.keys(CATEGORY_META) as [Category, ...Category[]]
 
 const blockSchema = z.object({
   subjectId: z.string().min(1).max(64),
+  itemId: z.string().min(1).max(64).nullish(),
   title: z.string().min(1).max(200),
   category: z.enum(CATEGORIES),
   startsAt: z.iso.datetime(),
@@ -88,6 +89,7 @@ export async function confirmScheduleAction(
     const { created, removed } = await replaceGeneratedEvents(
       blocks.map((block) => ({
         subjectId: block.subjectId,
+        itemId: block.itemId ?? null,
         title: block.title,
         category: block.category,
         startsAt: new Date(block.startsAt),
@@ -106,6 +108,9 @@ export async function confirmScheduleAction(
     // people looking for a deleted subject that was never the problem.
     if (error instanceof Error && error.message === 'Subject not found') {
       return { error: 'Some subjects are no longer available. Reload and try again.' }
+    }
+    if (error instanceof Error && error.message === 'Item not found') {
+      return { error: 'Some tasks were changed or deleted. Reload and try again.' }
     }
     return { error: 'The plan could not be saved. Try again in a moment.' }
   }

@@ -3,6 +3,8 @@ import Link from 'next/link'
 import { auth } from '@/auth'
 import { getDashboardSummary, listEventsInRange } from '@/lib/data/schedule'
 import { listSubjects } from '@/lib/data/subjects'
+import { listItems } from '@/lib/data/items'
+import { ITEM_LABELS } from '@/lib/scheduling'
 import { getLook, getProgress } from '@/lib/data/progress'
 import { CATEGORY_META, CATEGORY_ORDER } from '@/lib/categories'
 import { EmptyState } from '@/components/dashboard/EmptyState'
@@ -33,21 +35,40 @@ export default async function DashboardPage() {
   // User-scoped reads. None takes a userId; each derives it from the session
   // inside the data layer. Progress and look are cached per request, so the
   // layout's copies cost nothing extra.
-  const [todayEvents, summary, subjects, progress, look] = await Promise.all([
+  const [todayEvents, summary, subjects, progress, look, openItems] = await Promise.all([
     listEventsInRange(todayStart, todayEnd),
     getDashboardSummary(weekStart, weekEnd),
     listSubjects({ includeArchived: true }),
     getProgress(),
     getLook(),
+    listItems({ status: 'TODO' }),
   ])
 
   const activeSubjects = subjects.filter((s) => !s.archivedAt)
   const counts = new Map(summary.byCategory.map((row) => [row.category, row._count._all]))
 
-  // Exams from subjects and deadline events, next two weeks, one list. The
-  // spec's "upcoming exams" lived on subjects; this app's deadlines are events.
+  // Exams from subjects, open subject items, and deadline events, next two
+  // weeks, one list. Item due dates are date-only values at UTC midnight, so
+  // they are read back as that calendar day in local time.
   const horizon = addDays(todayStart, 15)
+  const subjectById = new Map(activeSubjects.map((s) => [s.id, s]))
   const upcoming = [
+    ...openItems
+      .filter((item) => item.dueDate && subjectById.has(item.subjectId))
+      .map((item) => {
+        const due = item.dueDate!
+        const subject = subjectById.get(item.subjectId)!
+        return {
+          id: `item-${item.id}`,
+          title: item.title,
+          detail: `${subject.name} · ${ITEM_LABELS[item.type].label}`,
+          date: new Date(due.getUTCFullYear(), due.getUTCMonth(), due.getUTCDate()),
+          color: subject.colorHex,
+          icon: ITEM_LABELS[item.type].icon,
+        }
+      })
+      // Overdue items stay on the list; they are the ones that most need seeing.
+      .filter((item) => item.date < horizon),
     ...activeSubjects
       .filter((s) => s.examDate && s.examDate >= todayStart && s.examDate < horizon)
       .map((s) => ({
@@ -157,8 +178,8 @@ export default async function DashboardPage() {
             {upcoming.length === 0 ? (
               <div className="card-body">
                 <p className="text-secondary small mb-0">
-                  Nothing due in the next two weeks. Add an exam date to a subject, or a
-                  project deadline, and it will be tracked here.
+                  Nothing due in the next two weeks. Add an exam, assignment or task with a
+                  due date to a subject and it will be tracked here.
                 </p>
               </div>
             ) : (

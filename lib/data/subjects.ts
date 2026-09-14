@@ -25,7 +25,7 @@ const subjectSelect = {
   examDate: true,
   seedKey: true,
   archivedAt: true,
-  _count: { select: { events: true } },
+  _count: { select: { events: true, items: true } },
 } satisfies Prisma.SubjectSelect
 
 export type SubjectDTO = Prisma.SubjectGetPayload<{ select: typeof subjectSelect }>

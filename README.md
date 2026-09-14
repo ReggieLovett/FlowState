@@ -97,10 +97,27 @@ XP is derived from completed events rather than stored, so un-ticking a block
 takes its XP back. The equipped avatar and season are kept in a cookie and
 re-checked against earned XP on every request.
 
-**Smart scheduling.** "Generate" on the schedule page builds a study plan for
-one, two or four weeks. Subjects are ranked by exam proximity, difficulty,
+**Subject items.** Each subject is a container for its own tasks, assignments,
+projects and exams, each with a due date, an effort estimate and a priority.
+Effort can be left blank; the app suggests one from the item type and the
+subject's difficulty. Items can be added in one line from the subject card, and
+each shows how much of its effort is already booked on the calendar.
+
+**Smart scheduling.** "Generate" on the schedule page builds a plan for the next
+one, two or four weeks. Items are planned first, earliest deadline first: each
+one's remaining effort is split into sessions and spread across the days before
+it is due. Exam revision is spaced evenly up to the day before, assignments and
+projects are front-loaded to leave a buffer, and a day may go past the daily
+goal only when a deadline needs it. The rest of each daily goal is then filled
+with general study time: subjects are ranked by exam proximity, difficulty,
 urgency and time already booked, and focus blocks are placed in real gaps around
-existing commitments. No subject is studied after its exam, blocks can alternate
+existing commitments.
+
+A review step shows the plan as a timeline before it is saved. Blocks can be
+dragged to another time or day, resized from their right edge, nudged with the
+arrow keys, or removed and restored, and clashes, missed deadlines and blocks in
+the past are flagged as they happen. Once saved, blocks stay draggable on the
+week and day calendar, and item deadlines are drawn in its all-day row. No subject is studied after its exam, blocks can alternate
 between subjects or stack into longer sessions, and a per-subject daily limit
 stops one subject taking over a day. The preview shows the split, the reasons
 behind each subject's rank and every block day by day before anything is saved.

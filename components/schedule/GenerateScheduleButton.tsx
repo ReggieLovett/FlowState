@@ -1,9 +1,11 @@
 'use client'
 
 import { useState } from 'react'
+import { usePathname, useRouter, useSearchParams } from 'next/navigation'
 import {
   GenerateScheduleDialog,
   type SerialEvent,
+  type SerialItem,
   type SerialSubject,
 } from './GenerateScheduleDialog'
 
@@ -16,17 +18,34 @@ import {
 export function GenerateScheduleButton({
   subjects,
   events,
+  items = [],
   weekStartISO,
   className = 'btn btn-outline-primary btn-sm',
   label = 'Generate',
 }: {
   subjects: SerialSubject[]
   events: SerialEvent[]
+  items?: SerialItem[]
   weekStartISO: string
   className?: string
   label?: string
 }) {
-  const [open, setOpen] = useState(false)
+  // `?plan=1` opens the planner on arrival, so "Plan this work" on the
+  // subjects page lands straight in it.
+  const searchParams = useSearchParams()
+  const router = useRouter()
+  const pathname = usePathname()
+  const [open, setOpen] = useState(() => searchParams.get('plan') === '1' && subjects.length > 0)
+
+  function close() {
+    setOpen(false)
+    // Drop the flag so a reload or a save does not reopen the dialog.
+    if (searchParams.get('plan')) {
+      const next = new URLSearchParams(searchParams.toString())
+      next.delete('plan')
+      router.replace(next.size ? `${pathname}?${next}` : pathname, { scroll: false })
+    }
+  }
   const disabled = subjects.length === 0
 
   return (
@@ -46,9 +65,10 @@ export function GenerateScheduleButton({
           DOM across opens; the expensive part is inside and mounts on demand. */}
       <GenerateScheduleDialog
         open={open}
-        onClose={() => setOpen(false)}
+        onClose={close}
         subjects={subjects}
         events={events}
+        items={items}
         weekStartISO={weekStartISO}
       />
     </>

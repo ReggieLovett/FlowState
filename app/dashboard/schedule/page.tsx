@@ -2,10 +2,11 @@ import type { Metadata } from 'next'
 import Link from 'next/link'
 import { listEventsInRange } from '@/lib/data/schedule'
 import { listSubjects } from '@/lib/data/subjects'
+import { listItems } from '@/lib/data/items'
 import { EventList } from '@/components/schedule/EventList'
 import { NewEventButton } from '@/components/schedule/NewEventButton'
 import { GenerateScheduleButton } from '@/components/schedule/GenerateScheduleButton'
-import { TimeGrid, type GridDay } from '@/components/schedule/TimeGrid'
+import { TimeGrid, type GridDay, type GridDeadline } from '@/components/schedule/TimeGrid'
 import { EmptyState } from '@/components/dashboard/EmptyState'
 import {
   addDays,
@@ -42,7 +43,7 @@ const WEEKDAY = new Intl.DateTimeFormat('en-GB', { weekday: 'short' })
 export default async function SchedulePage({
   searchParams,
 }: {
-  searchParams: Promise<{ week?: string; day?: string; view?: string }>
+  searchParams: Promise<{ week?: string; day?: string; view?: string; plan?: string }>
 }) {
   const params = await searchParams
   const view: View = params.view === 'day' || params.view === 'list' ? params.view : 'week'
@@ -69,9 +70,10 @@ export default async function SchedulePage({
   const planStart = weekStart > todayStart ? weekStart : todayStart
   const horizonEnd = addDays(planStart, PLANNER_HORIZON_DAYS)
 
-  const [horizonEvents, subjects] = await Promise.all([
+  const [horizonEvents, subjects, allItems] = await Promise.all([
     listEventsInRange(weekStart, horizonEnd),
     listSubjects(),
+    listItems(),
   ])
 
   const events = horizonEvents.filter(
@@ -103,7 +105,27 @@ export default async function SchedulePage({
     isAllDay: e.isAllDay,
     status: e.status,
     isGenerated: e.generatedAt !== null,
+    itemId: e.item?.id ?? null,
+    title: e.title,
   }))
+
+  // Open items for the planner. Items in archived subjects are left out: the
+  // planner only schedules work for subjects still on the go.
+  const activeSubjectIds = new Set(subjects.map((s) => s.id))
+  const schedulingItems = allItems
+    .filter((item) => item.status === 'TODO' && activeSubjectIds.has(item.subjectId))
+    .map((item) => ({
+      id: item.id,
+      subjectId: item.subjectId,
+      title: item.title,
+      type: item.type,
+      dueDate: item.dueDate ? item.dueDate.toISOString().slice(0, 10) : null,
+      estimatedMinutes: item.estimatedMinutes,
+      priority: item.priority,
+      bookedMinutes: Math.round(
+        item.events.reduce((sum, e) => sum + (e.endsAt.getTime() - e.startsAt.getTime()) / 60_000, 0),
+      ),
+    }))
 
   const days = Array.from({ length: 7 }, (_, i) => addDays(weekStart, i))
 
@@ -115,6 +137,22 @@ export default async function SchedulePage({
     label: formatLongDay(day),
     isToday: isSameDay(day, now),
   }))
+  // Item deadlines drawn in the calendar's all-day row, so the blocks leading up
+  // to an exam are visibly leading up to something.
+  const subjectColor = new Map(subjects.map((s) => [s.id, s.colorHex]))
+  const gridDeadlines: GridDeadline[] = allItems
+    .filter((item) => item.dueDate)
+    .map((item) => ({
+      itemId: item.id,
+      subjectId: item.subjectId,
+      date: item.dueDate!.toISOString().slice(0, 10),
+      title: item.title,
+      type: item.type,
+      color: subjectColor.get(item.subjectId) ?? '#868E96',
+      done: item.status === 'DONE',
+    }))
+    .filter((d) => gridDays.some((day) => day.iso === d.date))
+
   const gridEvents =
     view === 'day'
       ? events.filter((e) => e.startsAt < addDays(selectedDay, 1) && e.endsAt > selectedDay)
@@ -191,6 +229,7 @@ export default async function SchedulePage({
           <GenerateScheduleButton
             subjects={schedulingSubjects}
             events={schedulingEvents}
+            items={schedulingItems}
             weekStartISO={weekStart.toISOString()}
           />
 
@@ -215,7 +254,7 @@ export default async function SchedulePage({
               </Link>
             </div>
           )}
-          <TimeGrid days={gridDays} events={gridEvents} subjects={subjectOptions} />
+          <TimeGrid days={gridDays} events={gridEvents} subjects={subjectOptions} deadlines={gridDeadlines} />
         </>
       ) : subjects.length === 0 && events.length === 0 ? (
         <div className="card">

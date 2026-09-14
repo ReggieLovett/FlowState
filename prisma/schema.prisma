@@ -45,6 +45,7 @@ model User {
   sessions Session[]
 
   subjects Subject[]
+  items    SubjectItem[]
   events   ScheduleEvent[]
 
   createdAt DateTime @default(now())
@@ -112,6 +113,21 @@ enum EventStatus {
   CANCELLED
 }
 
+/// The kinds of work a subject can contain. They differ in how the planner
+/// spreads them: exam revision is spaced evenly up to the day before, while
+/// assignments and projects are front-loaded to leave a buffer.
+enum ItemType {
+  TASK
+  ASSIGNMENT
+  PROJECT
+  EXAM
+}
+
+enum ItemStatus {
+  TODO
+  DONE
+}
+
 /// A recurring commitment: a course, a client, or a standing block of focus time.
 /// Seeded defaults are ordinary rows, so the user has full CRUD over them from
 /// the moment the account exists.
@@ -125,11 +141,11 @@ model Subject {
   /// Course code, client code, or project key. e.g. "CS 4780", "ACME-2"
   code     String?
   /// Hex, for the calendar. Stored per subject so palettes survive a redesign.
-  colorHex String  @default("#4C6EF5")
+  colorHex String   @default("#4C6EF5")
   notes    String?
 
   /// 1-10 difficulty rating, feeds the smart scheduling priority score.
-  difficulty Int @default(5)
+  difficulty Int       @default(5)
   /// Optional exam or deadline date. When set, the scheduling engine weights
   /// this subject more heavily as the date approaches.
   examDate   DateTime?
@@ -151,6 +167,7 @@ model Subject {
   archivedAt DateTime?
 
   events ScheduleEvent[]
+  items  SubjectItem[]
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -165,6 +182,43 @@ model Subject {
   @@index([userId, archivedAt])
 }
 
+/// A piece of work inside a subject: an assignment, an exam to revise for, a
+/// project or a plain task. Subjects are the containers; these are what the
+/// smart scheduler actually plans.
+model SubjectItem {
+  id     String @id @default(cuid())
+  userId String
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  subjectId String
+  /// Related through (subjectId, userId) against Subject's compound unique, so
+  /// the database itself refuses an item whose subject belongs to someone else.
+  /// No application check can be forgotten when the constraint is the check.
+  subject   Subject @relation(fields: [subjectId, userId], references: [id, userId], onDelete: Cascade)
+
+  title  String
+  type   ItemType   @default(TASK)
+  status ItemStatus @default(TODO)
+
+  /// Due date, or the exam date for EXAM. Date-only, stored at UTC midnight.
+  dueDate          DateTime?
+  /// Total effort the work needs. Null means "suggest one", which the planner
+  /// derives from the type and the subject's difficulty.
+  estimatedMinutes Int?
+  /// 1 low, 2 normal, 3 high. Breaks ties between items due on the same day.
+  priority         Int       @default(2)
+  notes            String?
+
+  events ScheduleEvent[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([id, userId])
+  @@index([userId, subjectId])
+  @@index([userId, status, dueDate])
+}
+
 /// A single dated commitment on the calendar.
 model ScheduleEvent {
   id     String @id @default(cuid())
@@ -176,7 +230,16 @@ model ScheduleEvent {
   subjectId String?
   subject   Subject? @relation(fields: [subjectId], references: [id], onDelete: SetNull)
 
-  title String
+  /// The sub-item this block works on, when the planner scheduled one.
+  ///
+  /// A single-column relation rather than (itemId, userId): SetNull on a
+  /// compound key would try to null userId too. Ownership is checked in the
+  /// data layer instead, the same way subjectId is. Deleting an item detaches
+  /// finished blocks and the data layer removes its unfinished ones.
+  itemId String?
+  item   SubjectItem? @relation(fields: [itemId], references: [id], onDelete: SetNull)
+
+  title    String
   /// Denormalised from Subject so ad-hoc events are categorised too, and so a
   /// calendar query does not need the join.
   category Category
@@ -184,7 +247,7 @@ model ScheduleEvent {
   startsAt DateTime
   endsAt   DateTime
   /// All-day items such as a deadline, where the time component is meaningless.
-  isAllDay Boolean @default(false)
+  isAllDay Boolean  @default(false)
 
   location String?
   notes    String?
@@ -212,6 +275,7 @@ model ScheduleEvent {
   // Serves the dominant query: this user's events in a date window.
   @@index([userId, startsAt])
   @@index([userId, subjectId])
+  @@index([userId, itemId])
   // Serves "the blocks the scheduler made in this window", which every
   // regenerate and every clear has to answer before it writes.
   @@index([userId, generatedAt])

@@ -741,3 +741,472 @@ function buildWarnings(
 
   return warnings.slice(0, 4)
 }
+
+// ===========================================================================
+// Item planning
+//
+// Subjects contain items: tasks, assignments, projects and exams, each with a
+// due date and an amount of effort. `planItems` turns them into concrete
+// sessions on the calendar. The subject-level planner above still runs after
+// it, filling whatever daily goal is left with general study time, so a user
+// with no items gets exactly the behaviour they had before.
+// ===========================================================================
+
+export type ItemKind = 'TASK' | 'ASSIGNMENT' | 'PROJECT' | 'EXAM'
+
+export interface SchedulingItem {
+  id: string
+  subjectId: string
+  title: string
+  type: ItemKind
+  /** Local calendar day, or null for work with no deadline. */
+  dueDate: Date | null
+  /** Null asks the planner to suggest an effort. */
+  estimatedMinutes: number | null
+  /** 1 low, 2 normal, 3 high. */
+  priority: number
+  /** Minutes already on the calendar for this item that will survive the save. */
+  bookedMinutes: number
+}
+
+/** Typical effort at average difficulty, before scaling. */
+const EFFORT_BASE: Record<ItemKind, number> = {
+  TASK: 60,
+  ASSIGNMENT: 240,
+  PROJECT: 600,
+  EXAM: 480,
+}
+
+export const ITEM_LABELS: Record<ItemKind, { label: string; session: string; icon: string }> = {
+  TASK: { label: 'Task', session: 'Session', icon: 'bi-check2-square' },
+  ASSIGNMENT: { label: 'Assignment', session: 'Session', icon: 'bi-file-earmark-text' },
+  PROJECT: { label: 'Project', session: 'Work session', icon: 'bi-kanban' },
+  EXAM: { label: 'Exam', session: 'Revision', icon: 'bi-mortarboard' },
+}
+
+/**
+ * A starting estimate when the user leaves effort blank: the type's typical
+ * effort scaled from 0.7x for a difficulty-1 subject to 1.3x for a 10.
+ */
+export function suggestEstimate(type: ItemKind, difficulty: number): number {
+  const d = Math.min(10, Math.max(1, difficulty))
+  const factor = 0.7 + ((d - 1) / 9) * 0.6
+  return Math.max(15, Math.round((EFFORT_BASE[type] * factor) / 15) * 15)
+}
+
+export interface PlannedBlock extends GeneratedBlock {
+  itemId: string | null
+  itemTitle: string | null
+  itemType: ItemKind | null
+  /** 1-based position among the item's sessions in this plan, 0 for study time. */
+  session: number
+  sessions: number
+  /** Placed past the daily goal because the deadline left no other room. */
+  overGoal: boolean
+  /** The title the saved event will carry. */
+  title: string
+}
+
+export interface ItemPlanEntry {
+  item: SchedulingItem
+  subject: SchedulingSubject
+  effortMinutes: number
+  /** True when effort came from `suggestEstimate`. */
+  estimated: boolean
+  /** Effort still needed when the plan was made. */
+  neededMinutes: number
+  plannedMinutes: number
+  unplacedMinutes: number
+  sessions: number
+  /** Latest day this item's work may land on. */
+  lastDate: string
+  overdue: boolean
+}
+
+export interface ItemPlan {
+  blocks: PlannedBlock[]
+  entries: ItemPlanEntry[]
+  overGoalDays: string[]
+  warnings: string[]
+}
+
+interface DayState {
+  date: string
+  windowStart: number
+  windowEnd: number
+  /** Minutes of the daily goal still free. */
+  budget: number
+  busy: { start: number; end: number }[]
+  placed: { start: number; end: number; itemId: string }[]
+}
+
+/**
+ * First start time on a day where `duration` fits, honouring breaks.
+ *
+ * Candidates are the window start and the end of everything already on the
+ * day, each pushed out by a break. A candidate is valid if it clears every
+ * commitment and every placed block with a break either side, and if it would
+ * not extend a run of back-to-back blocks past `breakAfterBlocks`; in that case
+ * the long break applies instead.
+ */
+function findSlot(day: DayState, duration: number, prefs: SchedulingPrefs): number | null {
+  const pad = prefs.breakDuration
+  const longBreak = prefs.breakDuration * 3
+  const candidates = [
+    day.windowStart,
+    ...day.busy.map((b) => b.end + pad),
+    ...day.placed.map((b) => b.end + pad),
+  ]
+    .map((m) => ceilToStep(Math.max(m, day.windowStart), 5))
+    .sort((a, b) => a - b)
+
+  for (let start of candidates) {
+    // Enforce the long break by walking back through the chain of blocks that
+    // end right before this start.
+    let chain = 0
+    let edge = start
+    for (;;) {
+      // +5 because candidate starts are rounded up to five minutes.
+      const prev = day.placed.find((b) => b.end <= edge && edge - b.end <= pad + 5)
+      if (!prev) break
+      chain += 1
+      edge = prev.start
+    }
+    if (prefs.breakAfterBlocks > 0 && chain >= prefs.breakAfterBlocks) {
+      const lastEnd = Math.max(...day.placed.filter((b) => b.end <= start).map((b) => b.end))
+      start = ceilToStep(lastEnd + longBreak, 5)
+    }
+
+    const end = start + duration
+    if (end > day.windowEnd) continue
+    const clashBusy = day.busy.some((b) => overlaps(start - pad, end + pad, b.start, b.end))
+    const clashPlaced = day.placed.some((b) => overlaps(start - pad, end + pad, b.start, b.end))
+    if (!clashBusy && !clashPlaced) return start
+  }
+  return null
+}
+
+/** Session lengths for `minutes` of work in blocks of `block` minutes. */
+function splitSessions(minutes: number, block: number): number[] {
+  if (minutes <= 0) return []
+  const full = Math.floor(minutes / block)
+  const rest = minutes - full * block
+  const out = Array.from({ length: full }, () => block)
+  if (rest >= 15 || out.length === 0) out.push(Math.max(15, ceilToStep(rest, 5)))
+  // A sliver under 15 minutes rides along with the last full session.
+  else out[out.length - 1] += rest
+  return out
+}
+
+/**
+ * Where, across its `m` eligible days, the k-th of `n` sessions would ideally
+ * fall. Exams are spaced evenly with the last session on the final eligible
+ * day, because spaced revision beats cramming. Assignments and projects are
+ * spread over the first 80% of their window so the end stays free for slippage.
+ * Tasks and anything undated go as soon as possible.
+ */
+function idealIndex(type: ItemKind, dated: boolean, k: number, n: number, m: number): number {
+  if (m <= 1) return 0
+  if (!dated || type === 'TASK') return Math.min(m - 1, k)
+  if (type === 'EXAM') return Math.round(((m - 1) * (k + 1)) / n)
+  return Math.round(((m - 1) * 0.8 * k) / Math.max(1, n - 1))
+}
+
+export function planItems(
+  items: SchedulingItem[],
+  subjects: SchedulingSubject[],
+  existingEvents: ExistingEvent[],
+  startDate: string,
+  endDate: string,
+  prefs: SchedulingPrefs,
+  options: PlanOptions = {},
+): ItemPlan {
+  const notBefore = options.notBefore ?? todayISO()
+  const subjectById = new Map(subjects.map((s) => [s.id, s]))
+  const result: ItemPlan = { blocks: [], entries: [], overGoalDays: [], warnings: [] }
+
+  const allDates: string[] = []
+  for (let i = 0; i <= daysBetween(startDate, endDate); i += 1) {
+    const date = addDaysISO(startDate, i)
+    if (date >= notBefore) allDates.push(date)
+  }
+  const studyDates = allDates.filter((d) => prefs.studyDays.includes(parseISODate(d).getDay()))
+  if (allDates.length === 0) return result
+
+  // Per-day state, built once and shared by every item so they compete for
+  // the same hours rather than each seeing an empty calendar.
+  const days = new Map<string, DayState>()
+  for (const date of allDates) {
+    const dayEvents = existingEvents.filter(
+      (e) => e.status !== 'CANCELLED' && toISODate(e.startsAt) === date,
+    )
+    const busy = dayEvents.map((e) => {
+      if (e.isAllDay) return { start: 0, end: 24 * 60 }
+      const start = e.startsAt.getHours() * 60 + e.startsAt.getMinutes()
+      const rawEnd = e.endsAt.getHours() * 60 + e.endsAt.getMinutes()
+      return { start, end: rawEnd <= start ? 24 * 60 : rawEnd }
+    })
+    const prior = dayEvents.reduce(
+      (sum, e) =>
+        e.isGenerated && !e.isAllDay ? sum + (e.endsAt.getTime() - e.startsAt.getTime()) / 60_000 : sum,
+      0,
+    )
+    let windowStart = prefs.dayStartHour * 60
+    if (date === notBefore && options.notBeforeMinutes !== undefined) {
+      windowStart = Math.max(windowStart, ceilToStep(options.notBeforeMinutes, 5))
+    }
+    days.set(date, {
+      date,
+      windowStart,
+      windowEnd: prefs.dayEndHour * 60,
+      budget: Math.max(0, prefs.dailyGoalMinutes - prior),
+      busy,
+      placed: [],
+    })
+  }
+
+  // Earliest deadline first: the classic order for meeting deadlines, with
+  // priority and subject difficulty breaking ties. Undated work goes last.
+  const prepared = items
+    .map((item) => {
+      const subject = subjectById.get(item.subjectId)
+      if (!subject) return null
+      const estimated = item.estimatedMinutes === null
+      const effortMinutes = item.estimatedMinutes ?? suggestEstimate(item.type, subject.difficulty)
+      const neededMinutes = Math.max(0, effortMinutes - item.bookedMinutes)
+
+      const dueISO = item.dueDate ? toISODate(item.dueDate) : null
+      const overdue = dueISO !== null && dueISO < startDate
+      let lastDate = endDate
+      if (dueISO && !overdue) {
+        // Finish the day before, except plain tasks, which can be done on the
+        // day. When the day before is already gone, the due day is allowed.
+        const dayBefore = item.type === 'TASK' ? dueISO : addDaysISO(dueISO, -1)
+        lastDate = dayBefore >= (allDates[0] ?? startDate) ? dayBefore : dueISO
+        if (lastDate > endDate) lastDate = endDate
+      }
+      return { item, subject, estimated, effortMinutes, neededMinutes, dueISO, overdue, lastDate }
+    })
+    .filter((x): x is NonNullable<typeof x> => x !== null)
+    .sort((a, b) => {
+      if (a.overdue !== b.overdue) return a.overdue ? -1 : 1
+      const ad = a.dueISO ?? '9999-12-31'
+      const bd = b.dueISO ?? '9999-12-31'
+      if (ad !== bd) return ad < bd ? -1 : 1
+      if (a.item.priority !== b.item.priority) return b.item.priority - a.item.priority
+      return b.subject.difficulty - a.subject.difficulty
+    })
+
+  const overGoal = new Set<string>()
+
+  for (const p of prepared) {
+    const sessions = splitSessions(p.neededMinutes, prefs.blockDuration)
+    // Study days first; if the deadline leaves none, any day in the window.
+    let eligible = studyDates.filter((d) => d <= p.lastDate)
+    if (eligible.length === 0 && sessions.length > 0) eligible = allDates.filter((d) => d <= p.lastDate)
+    const m = eligible.length
+    const perDayCap = Math.max(prefs.maxBlocksPerSubjectPerDay, Math.ceil(sessions.length / Math.max(1, m)))
+
+    const placedHere: PlannedBlock[] = []
+    let unplacedMinutes = 0
+
+    sessions.forEach((duration, k) => {
+      // Overdue work has no window left to spread over, so it goes first-come.
+      const ideal = idealIndex(p.item.type, p.dueISO !== null && !p.overdue, k, sessions.length, m)
+
+      // Pass 1 respects the daily goal and the per-day cap. Pass 2 exists for
+      // deadlines: it ignores both and only needs a free slot in the window.
+      for (const strict of [true, false]) {
+        let best: { day: DayState; start: number; cost: number } | null = null
+
+        eligible.forEach((date, index) => {
+          const day = days.get(date)!
+          const sameItem = day.placed.filter((b) => b.itemId === p.item.id).length
+          if (strict && (duration > day.budget + 10 || sameItem >= perDayCap)) return
+          const start = findSlot(day, duration, prefs)
+          if (start === null) return
+
+          const load = (prefs.dailyGoalMinutes - day.budget) / Math.max(1, prefs.dailyGoalMinutes)
+          const cost =
+            Math.abs(index - ideal) / Math.max(1, m) +
+            0.6 * Math.max(0, load) +
+            (sameItem > 0 ? 1.5 : 0) +
+            // Mornings slightly preferred for hard subjects, evenings are not
+            // penalised enough to push work past its deadline.
+            start / (24 * 60 * 20)
+          if (!best || cost < best.cost) best = { day, start, cost }
+        })
+
+        if (best) {
+          const { day, start } = best as { day: DayState; start: number }
+          day.placed.push({ start, end: start + duration, itemId: p.item.id })
+          day.budget -= duration
+          if (!strict) overGoal.add(day.date)
+          placedHere.push({
+            subjectId: p.subject.id,
+            subjectName: p.subject.name,
+            subjectColor: p.subject.colorHex,
+            category: p.subject.category,
+            date: day.date,
+            startTime: minutesToTime(start),
+            endTime: minutesToTime(start + duration),
+            duration,
+            startsAt: makeDate(day.date, start),
+            endsAt: makeDate(day.date, start + duration),
+            itemId: p.item.id,
+            itemTitle: p.item.title,
+            itemType: p.item.type,
+            session: 0,
+            sessions: 0,
+            overGoal: !strict,
+            title: p.item.title,
+          })
+          return
+        }
+      }
+      unplacedMinutes += duration
+    })
+
+    // Number sessions in calendar order, whatever order they were placed in.
+    placedHere.sort((a, b) => a.startsAt.getTime() - b.startsAt.getTime())
+    placedHere.forEach((block, i) => {
+      block.session = i + 1
+      block.sessions = placedHere.length
+      block.title =
+        placedHere.length > 1
+          ? `${p.item.title} · ${ITEM_LABELS[p.item.type].session} ${i + 1}/${placedHere.length}`
+          : p.item.title
+    })
+    result.blocks.push(...placedHere)
+
+    const plannedMinutes = placedHere.reduce((sum, b) => sum + b.duration, 0)
+    result.entries.push({
+      item: p.item,
+      subject: p.subject,
+      effortMinutes: p.effortMinutes,
+      estimated: p.estimated,
+      neededMinutes: p.neededMinutes,
+      plannedMinutes,
+      unplacedMinutes,
+      sessions: placedHere.length,
+      lastDate: p.lastDate,
+      overdue: p.overdue,
+    })
+
+    if (p.overdue) {
+      result.warnings.push(`${p.item.title} was due ${formatISOShort(p.dueISO!)}. It is planned as soon as possible.`)
+    }
+    if (unplacedMinutes > 0) {
+      const by = p.dueISO && !p.overdue ? ` before ${formatISOShort(p.dueISO)}` : ''
+      result.warnings.push(
+        `${p.item.title}: ${formatMinutes(unplacedMinutes)} could not fit${by}. Add study days, widen the hours or plan further ahead.`,
+      )
+    }
+  }
+
+  result.blocks.sort((a, b) => a.startsAt.getTime() - b.startsAt.getTime())
+  result.overGoalDays = [...overGoal].sort()
+  if (result.overGoalDays.length > 0) {
+    const n = result.overGoalDays.length
+    result.warnings.push(
+      `${n} ${n === 1 ? 'day goes' : 'days go'} past your daily goal so deadlines are met.`,
+    )
+  }
+  return result
+}
+
+const SHORT_DAY = new Intl.DateTimeFormat('en-GB', { weekday: 'short', day: 'numeric', month: 'short' })
+
+function formatISOShort(iso: string): string {
+  return SHORT_DAY.format(parseISODate(iso))
+}
+
+function formatMinutes(minutes: number): string {
+  const h = Math.floor(minutes / 60)
+  const m = Math.round(minutes % 60)
+  if (h === 0) return `${m}m`
+  return m === 0 ? `${h}h` : `${h}h ${m}m`
+}
+
+// ---------------------------------------------------------------------------
+// Combined plan
+// ---------------------------------------------------------------------------
+
+export interface CombinedPlan {
+  blocks: PlannedBlock[]
+  items: ItemPlan
+  study: SchedulePlan
+  totalMinutes: number
+  warnings: string[]
+}
+
+/**
+ * Items first, because they carry deadlines; general study time second, into
+ * whatever daily goal remains. The item blocks are handed to the study planner
+ * as already-generated events, so it treats their slots as taken and their
+ * minutes as spent without knowing anything about items.
+ */
+export function planCombined(
+  items: SchedulingItem[],
+  subjects: SchedulingSubject[],
+  existingEvents: ExistingEvent[],
+  startDate: string,
+  endDate: string,
+  prefs: SchedulingPrefs,
+  options: PlanOptions & { fillStudyTime?: boolean; studySubjects?: SchedulingSubject[] } = {},
+): CombinedPlan {
+  const itemPlan = planItems(items, subjects, existingEvents, startDate, endDate, prefs, options)
+
+  const asEvents: ExistingEvent[] = itemPlan.blocks.map((b, i) => ({
+    id: `planned-${i}`,
+    // No subject: these hold slots and spend the daily goal, but they are not
+    // "already booked" study for the subject's priority, which would otherwise
+    // report this plan's own sessions back as existing work.
+    subjectId: null,
+    startsAt: b.startsAt,
+    endsAt: b.endsAt,
+    isAllDay: false,
+    status: 'SCHEDULED',
+    isGenerated: true,
+  }))
+
+  const study =
+    options.fillStudyTime === false || (options.studySubjects ?? subjects).length === 0
+      ? planSchedule([], [], startDate, endDate, prefs, options)
+      : planSchedule(
+          options.studySubjects ?? subjects,
+          [...existingEvents, ...asEvents],
+          startDate,
+          endDate,
+          prefs,
+          options,
+        )
+
+  const studyBlocks: PlannedBlock[] = study.blocks.map((b) => ({
+    ...b,
+    itemId: null,
+    itemTitle: null,
+    itemType: null,
+    session: 0,
+    sessions: 0,
+    overGoal: false,
+    title: `${b.subjectName} · Focus block`,
+  }))
+
+  const blocks = [...itemPlan.blocks, ...studyBlocks].sort(
+    (a, b) => a.startsAt.getTime() - b.startsAt.getTime(),
+  )
+
+  // With items present, the study planner's "nowhere to go" warning is noise:
+  // the items took that room on purpose.
+  const studyWarnings =
+    itemPlan.blocks.length > 0 ? study.warnings.filter((w) => !w.includes('nowhere to go')) : study.warnings
+
+  return {
+    blocks,
+    items: itemPlan,
+    study,
+    totalMinutes: blocks.reduce((sum, b) => sum + b.duration, 0),
+    warnings: [...itemPlan.warnings, ...studyWarnings].slice(0, 6),
+  }
+}
