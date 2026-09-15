@@ -2,6 +2,7 @@ import type { Metadata } from 'next'
 import { auth } from '@/auth'
 import { getLook, getProgress } from '@/lib/data/progress'
 import { chooseAvatarAction, chooseSeasonAction } from '@/lib/actions/rewards'
+import { ActionForm } from '@/components/feedback/ActionForm'
 import { AVATARS, SEASONS, XP_RULES, evaluateAchievements } from '@/lib/gamification'
 import { PlayerCard } from '@/components/rewards/PlayerCard'
 import { PixelAvatar, PixelGlyph, PixelScene } from '@/components/rewards/Pixel'
@@ -61,12 +62,12 @@ export default async function RewardsPage() {
                           Equipped
                         </span>
                       ) : unlocked ? (
-                        <form action={chooseAvatarAction}>
+                        <ActionForm action={chooseAvatarAction}>
                           <input type="hidden" name="avatar" value={avatar.id} />
                           <button type="submit" className="btn btn-sm btn-outline-primary">
                             Equip
                           </button>
-                        </form>
+                        </ActionForm>
                       ) : (
                         <UnlockMeter have={progress.totalXP} need={avatar.xp} />
                       )}
@@ -109,12 +110,12 @@ export default async function RewardsPage() {
                       {equipped ? (
                         <span className="badge text-bg-primary flex-shrink-0">Equipped</span>
                       ) : unlocked ? (
-                        <form action={chooseSeasonAction} className="flex-shrink-0">
+                        <ActionForm action={chooseSeasonAction} className="flex-shrink-0">
                           <input type="hidden" name="season" value={season.id} />
                           <button type="submit" className="btn btn-sm btn-outline-primary">
                             Equip
                           </button>
-                        </form>
+                        </ActionForm>
                       ) : (
                         <span className="chip flex-shrink-0">{season.xp} XP</span>
                       )}

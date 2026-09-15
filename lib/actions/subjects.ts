@@ -11,6 +11,8 @@ import {
 } from '@/lib/data/subjects'
 import { CATEGORY_ORDER } from '@/lib/categories'
 import type { ActionState } from '@/lib/actions/schedule'
+import { POLICIES } from '@/lib/rate-limit'
+import { limitUser } from '@/lib/rate-limit-user'
 import type { Category } from '@prisma/client'
 
 /**
@@ -50,6 +52,9 @@ export async function createSubjectAction(
   _previous: ActionState,
   formData: FormData,
 ): Promise<ActionState> {
+  const limited = await limitUser(POLICIES.write)
+  if (limited) return limited
+
   const parsed = parseForm(formData)
   if (!parsed.success) {
     return { error: parsed.error.issues[0]?.message ?? 'Check the form.' }
@@ -82,6 +87,9 @@ export async function updateSubjectAction(
   const id = String(formData.get('id') ?? '')
   if (!id) return { error: 'Missing subject.' }
 
+  const limited = await limitUser(POLICIES.write)
+  if (limited) return limited
+
   const parsed = parseForm(formData)
   if (!parsed.success) {
     return { error: parsed.error.issues[0]?.message ?? 'Check the form.' }
@@ -106,23 +114,49 @@ export async function updateSubjectAction(
   return { ok: true }
 }
 
-export async function deleteSubjectAction(formData: FormData): Promise<void> {
+export async function deleteSubjectAction(
+  _previous: ActionState,
+  formData: FormData,
+): Promise<ActionState> {
   const id = String(formData.get('id') ?? '')
-  if (id) await deleteSubject(id)
+  if (!id) return { error: 'Missing subject.' }
+
+  const limited = await limitUser(POLICIES.write)
+  if (limited) return limited
+
+  await deleteSubject(id)
 
   revalidatePath('/dashboard/subjects')
   revalidatePath('/dashboard/schedule')
+  return { ok: true }
 }
 
-export async function toggleSubjectArchivedAction(formData: FormData): Promise<void> {
+export async function toggleSubjectArchivedAction(
+  _previous: ActionState,
+  formData: FormData,
+): Promise<ActionState> {
   const id = String(formData.get('id') ?? '')
   const archived = formData.get('archived') === 'true'
-  if (id) await setSubjectArchived(id, archived)
+  if (!id) return { error: 'Missing subject.' }
+
+  const limited = await limitUser(POLICIES.write)
+  if (limited) return limited
+
+  try {
+    await setSubjectArchived(id, archived)
+  } catch {
+    return { error: 'That subject is no longer available.' }
+  }
 
   revalidatePath('/dashboard/subjects')
+  return { ok: true }
 }
 
-export async function restoreDefaultsAction(): Promise<void> {
+export async function restoreDefaultsAction(): Promise<ActionState> {
+  const limited = await limitUser(POLICIES.write)
+  if (limited) return limited
+
   await restoreDefaultSubjects()
   revalidatePath('/dashboard/subjects')
+  return { ok: true }
 }

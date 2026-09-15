@@ -30,6 +30,7 @@ import {
   type ConfirmState,
 } from '@/lib/actions/scheduling'
 import type { Category } from '@prisma/client'
+import { FormAlert, useRateLimitActive } from '@/components/feedback/FormAlert'
 
 /** Serialised subject as passed from server components. */
 export interface SerialSubject {
@@ -189,13 +190,13 @@ function ConfirmButton({
   )
 }
 
-function ClearButton({ count }: { count: number }) {
+function ClearButton({ count, blocked = false }: { count: number; blocked?: boolean }) {
   const { pending } = useFormStatus()
   return (
     <button
       type="submit"
       className="btn btn-outline-secondary"
-      disabled={pending || count === 0}
+      disabled={pending || count === 0 || blocked}
       aria-label={`Clear ${count} generated ${count === 1 ? 'block' : 'blocks'} in this range`}
       title={count === 0 ? 'No generated blocks in this range' : 'Remove generated blocks in this range'}
     >
@@ -629,7 +630,9 @@ function PlanBody({
   )
   const activeDays = byDay.filter((d) => d.blocks.length > 0).length
 
-  const error = confirmState.error ?? clearState.error
+  // Both forms share one limit, so whichever was refused last owns the message.
+  const failed = confirmState.error ? confirmState : clearState
+  const planLimited = useRateLimitActive(failed.rateLimit)
   const maxPriority = Math.max(1, ...plan.study.scored.map((s) => s.priorityScore))
 
   // The plan travels in a hidden field that always holds the current preview.
@@ -681,11 +684,7 @@ function PlanBody({
       </div>
 
       <div className="plan-dialog-body">
-        {error && (
-          <div className="alert alert-danger py-2 px-3 small m-4 mb-0" role="alert">
-            {error}
-          </div>
-        )}
+        <FormAlert error={failed.error} rateLimit={failed.rateLimit} className="m-4 mb-0" />
 
         {subjects.length === 0 ? (
           <p className="text-secondary small m-4">
@@ -1371,7 +1370,7 @@ function PlanBody({
           <form action={clearAction}>
             <input type="hidden" name="rangeStart" value={rangeBounds.from.toISOString()} />
             <input type="hidden" name="rangeEnd" value={rangeBounds.to.toISOString()} />
-            <ClearButton count={replaceable.length} />
+            <ClearButton count={replaceable.length} blocked={planLimited} />
           </form>
         )}
 
@@ -1389,7 +1388,7 @@ function PlanBody({
           <ConfirmButton
             count={activeBlocks.length}
             replacing={replace ? replaceable.length : 0}
-            blocked={step === 'review' && issueCounts.past > 0}
+            blocked={(step === 'review' && issueCounts.past > 0) || planLimited}
           />
         </form>
       </div>

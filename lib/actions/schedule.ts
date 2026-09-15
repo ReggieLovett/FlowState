@@ -7,6 +7,9 @@ import { createEvent, deleteEvent, updateEvent } from '@/lib/data/schedule'
 import { readProgress } from '@/lib/data/progress'
 import { CATEGORY_ORDER } from '@/lib/categories'
 import { diffRewards, type RewardDiff } from '@/lib/gamification'
+import { POLICIES } from '@/lib/rate-limit'
+import { limitUser } from '@/lib/rate-limit-user'
+import type { RateLimited } from '@/lib/rate-limit-shared'
 import type { Category } from '@prisma/client'
 
 /**
@@ -20,6 +23,8 @@ import type { Category } from '@prisma/client'
 export interface ActionState {
   error?: string
   ok?: boolean
+  /** Set when the request was refused for volume; forms count down from it. */
+  rateLimit?: RateLimited
 }
 
 // Typed as the Prisma enum, so a parsed value flows into EventInput without a cast.
@@ -65,6 +70,9 @@ export async function createEventAction(
   _previous: ActionState,
   formData: FormData,
 ): Promise<ActionState> {
+  const limited = await limitUser(POLICIES.write)
+  if (limited) return limited
+
   const parsed = parseForm(formData)
   if (!parsed.success) {
     return { error: parsed.error.issues[0]?.message ?? 'Check the form.' }
@@ -102,6 +110,9 @@ export async function updateEventAction(
   const id = String(formData.get('id') ?? '')
   if (!id) return { error: 'Missing event.' }
 
+  const limited = await limitUser(POLICIES.write)
+  if (limited) return limited
+
   const parsed = parseForm(formData)
   if (!parsed.success) {
     return { error: parsed.error.issues[0]?.message ?? 'Check the form.' }
@@ -134,25 +145,41 @@ export async function updateEventAction(
   return { ok: true }
 }
 
-export async function deleteEventAction(formData: FormData): Promise<void> {
+export async function deleteEventAction(
+  _previous: ActionState,
+  formData: FormData,
+): Promise<ActionState> {
   const id = String(formData.get('id') ?? '')
-  if (id) await deleteEvent(id)
+  if (!id) return { error: 'Missing event.' }
+
+  const limited = await limitUser(POLICIES.write)
+  if (limited) return limited
+
+  await deleteEvent(id)
 
   revalidatePath('/dashboard')
   revalidatePath('/dashboard/schedule')
+  return { ok: true }
 }
 
 const statusSchema = z.enum(['SCHEDULED', 'COMPLETED', 'CANCELLED'])
 
-export async function setEventStatusAction(formData: FormData): Promise<void> {
+export async function setEventStatusAction(
+  _previous: ActionState,
+  formData: FormData,
+): Promise<ActionState> {
   const id = String(formData.get('id') ?? '')
   const parsed = statusSchema.safeParse(formData.get('status'))
-  if (!id || !parsed.success) return
+  if (!id || !parsed.success) return { error: 'Could not update that event.' }
+
+  const limited = await limitUser(POLICIES.write)
+  if (limited) return limited
 
   await updateEvent(id, { status: parsed.data })
 
   revalidatePath('/dashboard')
   revalidatePath('/dashboard/schedule')
+  return { ok: true }
 }
 
 // ---------------------------------------------------------------------------
@@ -167,6 +194,7 @@ export interface CompleteState {
   rewards?: RewardDiff
   /** The block has not started yet, so its XP is pending. */
   pending?: boolean
+  rateLimit?: RateLimited
 }
 
 /**
@@ -183,6 +211,10 @@ export async function toggleCompleteAction(
   const id = String(formData.get('id') ?? '')
   const parsed = z.enum(['SCHEDULED', 'COMPLETED']).safeParse(formData.get('status'))
   if (!id || !parsed.success) return { error: 'Could not update that event.' }
+
+  // Before the two progress reads, which are what make this action expensive.
+  const limited = await limitUser(POLICIES.complete)
+  if (limited) return limited
 
   const before = await readProgress()
 
@@ -237,6 +269,9 @@ export async function moveEventAction(input: {
 }): Promise<ActionState> {
   const parsed = moveSchema.safeParse(input)
   if (!parsed.success) return { error: parsed.error.issues[0]?.message ?? 'Invalid time.' }
+
+  const limited = await limitUser(POLICIES.move)
+  if (limited) return limited
 
   try {
     await updateEvent(parsed.data.id, {

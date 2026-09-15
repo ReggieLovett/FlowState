@@ -2,20 +2,18 @@
 
 import { useActionState } from 'react'
 import { registerAction, type AuthFormState } from '@/lib/actions/auth'
+import { FormAlert, useRateLimitActive } from '@/components/feedback/FormAlert'
 import { SubmitButton } from './SubmitButton'
 
 const INITIAL: AuthFormState = {}
 
 export function SignUpForm() {
   const [state, formAction] = useActionState(registerAction, INITIAL)
+  const limited = useRateLimitActive(state.rateLimit)
 
   return (
     <form action={formAction} noValidate>
-      {state.error && (
-        <div className="alert alert-danger py-2 px-3 small" role="alert">
-          {state.error}
-        </div>
-      )}
+      <FormAlert error={state.error} rateLimit={state.rateLimit} />
 
       <div className="mb-3">
         <label htmlFor="name" className="form-label small fw-medium">
@@ -66,7 +64,7 @@ export function SignUpForm() {
         </div>
       </div>
 
-      <SubmitButton>Create account</SubmitButton>
+      <SubmitButton blocked={limited}>Create account</SubmitButton>
     </form>
   )
 }

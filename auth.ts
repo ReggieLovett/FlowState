@@ -1,4 +1,4 @@
-import NextAuth from 'next-auth'
+import NextAuth, { CredentialsSignin } from 'next-auth'
 import Credentials from 'next-auth/providers/credentials'
 import { PrismaAdapter } from '@auth/prisma-adapter'
 import type { PrismaClient } from '@prisma/client'
@@ -7,6 +7,7 @@ import { z } from 'zod'
 
 import { authConfig } from '@/auth.config'
 import { prisma } from '@/lib/prisma'
+import { POLICIES, consume, ipFromHeaders, peek, resetLimit } from '@/lib/rate-limit'
 
 /**
  * Full Auth.js configuration. Node runtime only: it touches Prisma and bcrypt.
@@ -21,6 +22,20 @@ const credentialsSchema = z.object({
   email: z.string().email(),
   password: z.string().min(8),
 })
+
+/**
+ * Thrown instead of returning null when a sign-in is refused for volume.
+ *
+ * Auth.js carries `code` to both callers: the sign-in Server Action receives
+ * the error itself, and a direct POST to /api/auth/callback/credentials is
+ * redirected to /login?error=CredentialsSignin&code=rate_limited. The code
+ * says "slow down", which reveals nothing about whether the account exists.
+ */
+export const RATE_LIMITED_CODE = 'rate_limited'
+
+class SignInRateLimited extends CredentialsSignin {
+  code = RATE_LIMITED_CODE
+}
 
 export const { handlers, auth, signIn, signOut } = NextAuth({
   ...authConfig,
@@ -44,14 +59,29 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
         password: { label: 'Password', type: 'password' },
       },
 
-      async authorize(rawCredentials) {
+      // The limits live here, not in the sign-in Server Action, because this is
+      // the one place every password check passes through. The Auth.js
+      // callback endpoint is public, so a limit in the form action alone would
+      // be skipped by anyone posting to it directly.
+      async authorize(rawCredentials, request) {
         const parsed = credentialsSchema.safeParse(rawCredentials)
         if (!parsed.success) return null
 
         const { email, password } = parsed.data
+        const account = email.toLowerCase()
+
+        // Every attempt from this IP counts, before any bcrypt work is spent.
+        const byIp = await consume(POLICIES.signInIp, ipFromHeaders(request.headers))
+        if (!byIp.ok) throw new SignInRateLimited()
+
+        // Only failures count against the account (below), so this is a read.
+        // `remaining === 0` rather than `!ok`: a read taken before an attempt
+        // must refuse once the allowance is used up, not one failure later.
+        const byAccount = await peek(POLICIES.signInAccount, account)
+        if (byAccount.remaining === 0) throw new SignInRateLimited()
 
         const user = await prisma.user.findUnique({
-          where: { email: email.toLowerCase() },
+          where: { email: account },
           omit: { passwordHash: false },
         })
 
@@ -62,8 +92,16 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
         const hash = user?.passwordHash ?? DUMMY_HASH
         const passwordMatches = await bcrypt.compare(password, hash)
 
-        if (!user?.passwordHash || !passwordMatches) return null
+        if (!user?.passwordHash || !passwordMatches) {
+          // Counted whether or not the address is registered, so the limit
+          // behaves identically for both and cannot be used to tell them apart.
+          await consume(POLICIES.signInAccount, account)
+          return null
+        }
 
+        // A correct password clears earlier typos, so the owner is never left
+        // one mistake away from a lockout.
+        await resetLimit(POLICIES.signInAccount, account)
         return { id: user.id, email: user.email, name: user.name, image: user.image }
       },
     }),

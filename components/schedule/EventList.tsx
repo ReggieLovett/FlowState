@@ -2,6 +2,7 @@ import { CATEGORY_META } from '@/lib/categories'
 import type { ScheduleEventDTO } from '@/lib/data/schedule'
 import { formatRange } from '@/lib/format'
 import { deleteEventAction } from '@/lib/actions/schedule'
+import { ActionForm } from '@/components/feedback/ActionForm'
 import { CompleteToggle } from './CompleteToggle'
 import { EditEventButton } from './EditEventButton'
 import type { SubjectOption } from './EventFormModal'
@@ -72,7 +73,7 @@ export function EventList({
 
               {editable && <EditEventButton event={event} subjects={subjects} />}
 
-              <form action={deleteEventAction}>
+              <ActionForm action={deleteEventAction}>
                 <input type="hidden" name="id" value={event.id} />
                 <button
                   type="submit"
@@ -82,7 +83,7 @@ export function EventList({
                 >
                   <i className="bi bi-trash3" aria-hidden="true" />
                 </button>
-              </form>
+              </ActionForm>
             </div>
           </li>
         )

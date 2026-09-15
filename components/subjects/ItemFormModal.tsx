@@ -1,6 +1,7 @@
 'use client'
 
 import { Fragment, useActionState, useEffect, useRef, useState } from 'react'
+import { FormAlert, useRateLimitActive } from '@/components/feedback/FormAlert'
 import { useFormStatus } from 'react-dom'
 import { createItemAction, updateItemAction } from '@/lib/actions/items'
 import type { ActionState } from '@/lib/actions/schedule'
@@ -42,10 +43,10 @@ export function formatEffort(minutes: number): string {
   return m === 0 ? `${h}h` : `${h}h ${m}m`
 }
 
-function Submit({ label }: { label: string }) {
+function Submit({ label, blocked = false }: { label: string; blocked?: boolean }) {
   const { pending } = useFormStatus()
   return (
-    <button type="submit" className="btn btn-primary" disabled={pending}>
+    <button type="submit" className="btn btn-primary" disabled={pending || blocked}>
       {pending && <span className="spinner-border spinner-border-sm me-2" aria-hidden="true" />}
       {label}
     </button>
@@ -76,6 +77,8 @@ export function ItemFormModal({
 }) {
   const isEdit = Boolean(item)
   const [state, formAction] = useActionState(isEdit ? updateItemAction : createItemAction, INITIAL)
+  // Locks the submit button for the length of a rate limit; the alert says why.
+  const limited = useRateLimitActive(state.rateLimit)
   const dialogRef = useRef<HTMLDialogElement>(null)
 
   const [type, setType] = useState<ItemKind>(item?.type ?? defaultType)
@@ -119,11 +122,7 @@ export function ItemFormModal({
         </div>
 
         <div className="p-4">
-          {state.error && (
-            <div className="alert alert-danger py-2 px-3 small" role="alert">
-              {state.error}
-            </div>
-          )}
+          <FormAlert error={state.error} rateLimit={state.rateLimit} />
 
           <fieldset className="mb-3">
             <legend className="form-label small fw-medium mb-1">Type</legend>
@@ -271,7 +270,7 @@ export function ItemFormModal({
           <button type="button" className="btn btn-outline-secondary" onClick={onClose}>
             Cancel
           </button>
-          <Submit label={isEdit ? 'Save changes' : `Add ${ITEM_LABELS[type].label.toLowerCase()}`} />
+          <Submit label={isEdit ? 'Save changes' : `Add ${ITEM_LABELS[type].label.toLowerCase()}`} blocked={limited} />
         </div>
       </form>
     </dialog>

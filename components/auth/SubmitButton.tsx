@@ -8,11 +8,18 @@ import { useFormStatus } from 'react-dom'
  * `useFormStatus` has to be read from a child of the <form>, not from the
  * component that renders it, which is why this is its own component.
  */
-export function SubmitButton({ children }: { children: React.ReactNode }) {
+export function SubmitButton({
+  children,
+  blocked = false,
+}: {
+  children: React.ReactNode
+  /** Held disabled while a rate limit counts down. */
+  blocked?: boolean
+}) {
   const { pending } = useFormStatus()
 
   return (
-    <button type="submit" className="btn btn-primary w-100" disabled={pending}>
+    <button type="submit" className="btn btn-primary w-100" disabled={pending || blocked}>
       {pending && (
         <span
           className="spinner-border spinner-border-sm me-2"

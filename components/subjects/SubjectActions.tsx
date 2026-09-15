@@ -2,6 +2,8 @@
 
 import { useCallback, useState } from 'react'
 import type { SubjectDTO } from '@/lib/data/subjects'
+import { isRateLimitBody, type RateLimited } from '@/lib/rate-limit-shared'
+import { FormAlert, useRateLimitActive } from '@/components/feedback/FormAlert'
 import { SubjectFormModal } from './SubjectFormModal'
 
 /** Edit button plus its dialog, for one subject row. */
@@ -99,6 +101,8 @@ export function DeleteSubjectButton({
  *
  * Shows a confirmation step, calls DELETE /api/subjects/:id, and notifies the
  * parent via `onDeleted` on success so it can remove the card from the DOM.
+ * A 429 shows a countdown and holds the confirm button until it ends; a 401
+ * says the session has gone rather than reporting a generic failure.
  */
 export function FetchDeleteSubjectButton({
   subject,
@@ -109,16 +113,37 @@ export function FetchDeleteSubjectButton({
 }) {
   const [confirming, setConfirming] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [rateLimit, setRateLimit] = useState<RateLimited | undefined>(undefined)
   const [loading, setLoading] = useState(false)
+  const limited = useRateLimitActive(rateLimit)
 
   const handleDelete = useCallback(async () => {
     setLoading(true)
     setError(null)
+    setRateLimit(undefined)
 
     try {
       const res = await fetch(`/api/subjects/${subject.id}`, {
         method: 'DELETE',
       })
+
+      if (res.status === 429) {
+        const body: unknown = await res.json().catch(() => null)
+        if (isRateLimitBody(body)) {
+          setRateLimit(body)
+        } else {
+          // A 429 from something in front of the app (a CDN, a WAF) will not
+          // carry our body, but it should still say "wait", with the header's
+          // number when there is one.
+          const seconds = Number(res.headers.get('Retry-After')) || 30
+          setRateLimit({ retryAfterSeconds: seconds, retryAt: Date.now() + seconds * 1000, what: 'changes' })
+        }
+        return
+      }
+
+      if (res.status === 401) {
+        throw new Error('Your session has ended. Sign in again to delete this subject.')
+      }
 
       if (!res.ok) {
         const body = await res.json().catch(() => null)
@@ -153,17 +178,21 @@ export function FetchDeleteSubjectButton({
 
   return (
     <div className="d-flex flex-column align-items-end gap-1">
-      {error && (
-        <div className="text-danger small" role="alert">
-          {error}
-        </div>
+      {rateLimit ? (
+        <FormAlert rateLimit={rateLimit} className="mb-0" />
+      ) : (
+        error && (
+          <div className="text-danger small" role="alert">
+            {error}
+          </div>
+        )
       )}
       <div className="d-flex align-items-center gap-1">
         <button
           type="button"
           className="btn btn-sm btn-danger"
           onClick={handleDelete}
-          disabled={loading}
+          disabled={loading || limited}
         >
           {loading ? (
             <>
@@ -180,6 +209,7 @@ export function FetchDeleteSubjectButton({
           onClick={() => {
             setConfirming(false)
             setError(null)
+            setRateLimit(undefined)
           }}
           disabled={loading}
         >

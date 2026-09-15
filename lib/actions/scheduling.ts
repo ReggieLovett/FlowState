@@ -9,6 +9,9 @@ import {
 } from '@/lib/data/schedule'
 import type { Category } from '@prisma/client'
 import { CATEGORY_META } from '@/lib/categories'
+import { POLICIES } from '@/lib/rate-limit'
+import { limitUser } from '@/lib/rate-limit-user'
+import type { RateLimited } from '@/lib/rate-limit-shared'
 
 /**
  * Server Actions for the smart scheduling engine.
@@ -51,12 +54,18 @@ export interface ConfirmState {
   ok?: boolean
   created?: number
   removed?: number
+  rateLimit?: RateLimited
 }
 
 export async function confirmScheduleAction(
   _previous: ConfirmState,
   formData: FormData,
 ): Promise<ConfirmState> {
+  // Counted before the payload is even parsed: a plan can be 2,000 rows, and a
+  // refused request should cost the server as little as possible.
+  const limited = await limitUser(POLICIES.planWrite)
+  if (limited) return limited
+
   const raw = formData.get('payload')
   if (typeof raw !== 'string') return { error: 'Missing schedule data.' }
 
@@ -130,6 +139,9 @@ export async function clearGeneratedAction(
   _previous: ConfirmState,
   formData: FormData,
 ): Promise<ConfirmState> {
+  const limited = await limitUser(POLICIES.planWrite)
+  if (limited) return limited
+
   const validated = clearSchema.safeParse({
     rangeStart: formData.get('rangeStart'),
     rangeEnd: formData.get('rangeEnd'),

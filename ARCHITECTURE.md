@@ -105,6 +105,9 @@ types/next-auth.d.ts       Adds `id` to Session and JWT.
 lib/
   prisma.ts                Client singleton with the pg driver adapter.
   auth-guard.ts            requireUserId() / getUserId().
+  rate-limit.ts            Fixed-window limiter on Postgres, policies, 429s.
+  rate-limit-user.ts       Per-user limits for Server Actions and routes.
+  rate-limit-shared.ts     Client-safe types and wording for countdowns.
   categories.ts            Display metadata for the commitment types.
   scheduling.ts            Smart scheduling engine. Pure; runs in the browser
                            for a live preview, no storage access.

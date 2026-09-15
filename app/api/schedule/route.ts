@@ -2,6 +2,8 @@ import { NextResponse } from 'next/server'
 import { z } from 'zod'
 import { getUserId } from '@/lib/auth-guard'
 import { createEvent, listEventsInRange } from '@/lib/data/schedule'
+import { POLICIES, rateLimitHeaders, tooManyRequests } from '@/lib/rate-limit'
+import { consumeForUser } from '@/lib/rate-limit-user'
 
 /**
  * Example of a secure server-side route.
@@ -33,6 +35,11 @@ export async function GET(request: Request) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
   }
 
+  // After authentication, so an anonymous flood cannot spend a user's budget,
+  // and before any query, so a limited request costs one small upsert.
+  const limit = await consumeForUser(POLICIES.apiRead, userId)
+  if (!limit.ok) return tooManyRequests(POLICIES.apiRead, limit)
+
   const { searchParams } = new URL(request.url)
   const parsed = rangeSchema.safeParse({
     from: searchParams.get('from'),
@@ -63,7 +70,7 @@ export async function GET(request: Request) {
 
   const events = await listEventsInRange(parsed.data.from, parsed.data.to)
 
-  return NextResponse.json({ events })
+  return NextResponse.json({ events }, { headers: rateLimitHeaders(limit) })
 }
 
 const createSchema = z
@@ -99,6 +106,9 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
   }
 
+  const limit = await consumeForUser(POLICIES.write, userId)
+  if (!limit.ok) return tooManyRequests(POLICIES.write, limit)
+
   let body: unknown
   try {
     body = await request.json()
@@ -117,7 +127,7 @@ export async function POST(request: Request) {
   try {
     // `userId` is never taken from the body; createEvent reads the session.
     const event = await createEvent(parsed.data)
-    return NextResponse.json({ event }, { status: 201 })
+    return NextResponse.json({ event }, { status: 201, headers: rateLimitHeaders(limit) })
   } catch (error) {
     // Thrown when subjectId points at a row this user does not own. Reported as
     // 404, not 403: confirming the id exists would leak another user's data.

@@ -3,6 +3,7 @@ import bcrypt from 'bcryptjs'
 import { z } from 'zod'
 import { Prisma } from '@prisma/client'
 import { prisma } from '@/lib/prisma'
+import { POLICIES, consume, ipFromHeaders, rateLimitHeaders, tooManyRequests } from '@/lib/rate-limit'
 
 /**
  * Credentials sign-up.
@@ -22,6 +23,11 @@ const registerSchema = z.object({
 })
 
 export async function POST(request: Request) {
+  // Before parsing: a malformed body still costs a request, so a client cannot
+  // probe the endpoint for free by sending junk.
+  const limit = await consume(POLICIES.register, ipFromHeaders(request.headers))
+  if (!limit.ok) return tooManyRequests(POLICIES.register, limit)
+
   let body: unknown
   try {
     body = await request.json()
@@ -46,7 +52,7 @@ export async function POST(request: Request) {
       select: { id: true, email: true, name: true },
     })
 
-    return NextResponse.json({ user }, { status: 201 })
+    return NextResponse.json({ user }, { status: 201, headers: rateLimitHeaders(limit) })
   } catch (error) {
     // P2002 is the unique violation on User.email. Answering "created" for an
     // address that already exists would be a lie the client acts on, so this

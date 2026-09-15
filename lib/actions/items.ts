@@ -5,6 +5,8 @@ import { unstable_rethrow } from 'next/navigation'
 import { z } from 'zod'
 import { createItem, deleteItem, updateItem } from '@/lib/data/items'
 import type { ActionState } from '@/lib/actions/schedule'
+import { POLICIES } from '@/lib/rate-limit'
+import { limitUser } from '@/lib/rate-limit-user'
 
 /**
  * Server Actions for subject items.
@@ -74,6 +76,9 @@ export async function createItemAction(
   _previous: ActionState,
   formData: FormData,
 ): Promise<ActionState> {
+  const limited = await limitUser(POLICIES.write)
+  if (limited) return limited
+
   const parsed = parse(formData)
   if (!parsed.success) return { error: parsed.error.issues[0]?.message ?? 'Check the form.' }
 
@@ -95,6 +100,9 @@ export async function updateItemAction(
   const id = String(formData.get('id') ?? '')
   if (!id) return { error: 'Missing item.' }
 
+  const limited = await limitUser(POLICIES.write)
+  if (limited) return limited
+
   const parsed = parse(formData)
   if (!parsed.success) return { error: parsed.error.issues[0]?.message ?? 'Check the form.' }
 
@@ -109,24 +117,40 @@ export async function updateItemAction(
   return { ok: true }
 }
 
-export async function setItemStatusAction(formData: FormData): Promise<void> {
+export async function setItemStatusAction(
+  _previous: ActionState,
+  formData: FormData,
+): Promise<ActionState> {
   const id = String(formData.get('id') ?? '')
   const status = formData.get('status')
-  if (!id || (status !== 'TODO' && status !== 'DONE')) return
+  if (!id || (status !== 'TODO' && status !== 'DONE')) return { error: 'Could not update that item.' }
+
+  const limited = await limitUser(POLICIES.write)
+  if (limited) return limited
 
   try {
     await updateItem(id, { status })
   } catch (error) {
     unstable_rethrow(error)
-    // Someone else's id, or already deleted: nothing to change.
-    return
+    // Someone else's id, or already deleted.
+    return { error: 'That item is no longer available.' }
   }
 
   refresh()
+  return { ok: true }
 }
 
-export async function deleteItemAction(formData: FormData): Promise<void> {
+export async function deleteItemAction(
+  _previous: ActionState,
+  formData: FormData,
+): Promise<ActionState> {
   const id = String(formData.get('id') ?? '')
-  if (id) await deleteItem(id)
+  if (!id) return { error: 'Missing item.' }
+
+  const limited = await limitUser(POLICIES.write)
+  if (limited) return limited
+
+  await deleteItem(id)
   refresh()
+  return { ok: true }
 }

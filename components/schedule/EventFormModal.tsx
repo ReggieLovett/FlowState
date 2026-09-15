@@ -1,6 +1,7 @@
 'use client'
 
 import { useActionState, useEffect, useRef, useState } from 'react'
+import { FormAlert, useRateLimitActive } from '@/components/feedback/FormAlert'
 import { useFormStatus } from 'react-dom'
 import { CATEGORY_META, CATEGORY_ORDER } from '@/lib/categories'
 import { createEventAction, updateEventAction, type ActionState } from '@/lib/actions/schedule'
@@ -30,10 +31,10 @@ function defaultStart(day?: Date): Date {
   return start
 }
 
-function Submit({ label }: { label: string }) {
+function Submit({ label, blocked = false }: { label: string; blocked?: boolean }) {
   const { pending } = useFormStatus()
   return (
-    <button type="submit" className="btn btn-primary" disabled={pending}>
+    <button type="submit" className="btn btn-primary" disabled={pending || blocked}>
       {pending && <span className="spinner-border spinner-border-sm me-2" aria-hidden="true" />}
       {label}
     </button>
@@ -65,6 +66,8 @@ export function EventFormModal({
     isEdit ? updateEventAction : createEventAction,
     INITIAL,
   )
+  // Locks the submit button for the length of a rate limit; the alert says why.
+  const limited = useRateLimitActive(state.rateLimit)
   const dialogRef = useRef<HTMLDialogElement>(null)
   const [allDay, setAllDay] = useState(event?.isAllDay ?? false)
 
@@ -108,11 +111,7 @@ export function EventFormModal({
         </div>
 
         <div className="p-4">
-          {state.error && (
-            <div className="alert alert-danger py-2 px-3 small" role="alert">
-              {state.error}
-            </div>
-          )}
+          <FormAlert error={state.error} rateLimit={state.rateLimit} />
 
           <div className="mb-3">
             <label htmlFor="title" className="form-label small fw-medium">
@@ -259,7 +258,7 @@ export function EventFormModal({
           <button type="button" className="btn btn-outline-secondary" onClick={onClose}>
             Cancel
           </button>
-          <Submit label={isEdit ? 'Save changes' : 'Add event'} />
+          <Submit label={isEdit ? 'Save changes' : 'Add event'} blocked={limited} />
         </div>
       </form>
     </dialog>

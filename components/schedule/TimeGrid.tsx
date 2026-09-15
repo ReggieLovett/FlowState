@@ -15,6 +15,8 @@ import { ITEM_LABELS, type ItemKind } from '@/lib/scheduling'
 import { moveEventAction } from '@/lib/actions/schedule'
 import type { ScheduleEventDTO } from '@/lib/data/schedule'
 import { CompleteToggle } from './CompleteToggle'
+import { FormAlert } from '@/components/feedback/FormAlert'
+import type { ActionState } from '@/lib/actions/schedule'
 import { EventFormModal, type SubjectOption } from './EventFormModal'
 
 /**
@@ -165,7 +167,9 @@ export function TimeGrid({
 
   const [preview, setPreview] = useState<{ id: string; dayIndex: number; start: number; end: number } | null>(null)
   const [overrides, setOverrides] = useState<Record<string, Override>>({})
-  const [error, setError] = useState<string | null>(null)
+  // The last refused move, rate limits included, so the grid can say why a
+  // block snapped back.
+  const [failure, setFailure] = useState<ActionState | null>(null)
   const [editing, setEditing] = useState<ScheduleEventDTO | null>(null)
   const [creating, setCreating] = useState<Date | null>(null)
   const [, startTransition] = useTransition()
@@ -221,7 +225,7 @@ export function TimeGrid({
     const endsAt = dayDate(days[dayIndex].iso, end)
     if (startsAt.getTime() === event.startsAt.getTime() && endsAt.getTime() === event.endsAt.getTime()) return
 
-    setError(null)
+    setFailure(null)
     const original = events.find((e) => e.id === event.id) ?? event
     setOverrides((current) => ({ ...current, [event.id]: { from: keyOf(original), startsAt, endsAt } }))
 
@@ -232,7 +236,7 @@ export function TimeGrid({
         endsAt: endsAt.toISOString(),
       })
       if (result.error) {
-        setError(result.error)
+        setFailure(result)
         setOverrides((current) => {
           const next = { ...current }
           delete next[event.id]
@@ -446,11 +450,7 @@ export function TimeGrid({
 
   return (
     <div className="card time-grid">
-      {error && (
-        <div className="alert alert-danger py-2 px-3 small m-3 mb-0" role="alert">
-          {error}
-        </div>
-      )}
+      <FormAlert error={failure?.error} rateLimit={failure?.rateLimit} className="m-3 mb-0" />
 
       <div className="time-grid-scroll" ref={scrollRef}>
         <div

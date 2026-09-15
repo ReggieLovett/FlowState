@@ -11,6 +11,7 @@ import {
 import { SubjectItems, type SubjectItemView } from '@/components/subjects/SubjectItems'
 import type { ItemSubjectOption } from '@/components/subjects/ItemFormModal'
 import { toggleSubjectArchivedAction } from '@/lib/actions/subjects'
+import { ActionForm } from '@/components/feedback/ActionForm'
 
 /**
  * Subjects as containers, each holding its tasks, assignments, projects and
@@ -112,7 +113,7 @@ function SubjectCard({
           </div>
 
           <div className="d-flex align-items-center gap-1 flex-shrink-0">
-            <form action={toggleSubjectArchivedAction}>
+            <ActionForm action={toggleSubjectArchivedAction}>
               <input type="hidden" name="id" value={subject.id} />
               <input type="hidden" name="archived" value={isArchived ? 'false' : 'true'} />
               <button
@@ -123,7 +124,7 @@ function SubjectCard({
               >
                 <i className={`bi ${isArchived ? 'bi-arrow-up-circle' : 'bi-archive'}`} aria-hidden="true" />
               </button>
-            </form>
+            </ActionForm>
 
             <EditSubjectButton subject={subject} />
             <FetchDeleteSubjectButton subject={subject} onDeleted={onDeleted} />

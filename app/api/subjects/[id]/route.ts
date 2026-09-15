@@ -1,6 +1,8 @@
 import { NextResponse } from 'next/server'
 import { getUserId } from '@/lib/auth-guard'
 import { prisma } from '@/lib/prisma'
+import { POLICIES, rateLimitHeaders, tooManyRequests } from '@/lib/rate-limit'
+import { consumeForUser } from '@/lib/rate-limit-user'
 
 export const runtime = 'nodejs'
 export const dynamic = 'force-dynamic'
@@ -24,6 +26,9 @@ export async function DELETE(
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
   }
 
+  const limit = await consumeForUser(POLICIES.write, userId)
+  if (!limit.ok) return tooManyRequests(POLICIES.write, limit)
+
   const { id } = await params
 
   const { count } = await prisma.subject.deleteMany({
@@ -34,5 +39,5 @@ export async function DELETE(
     return NextResponse.json({ error: 'Subject not found' }, { status: 404 })
   }
 
-  return NextResponse.json({ ok: true })
+  return NextResponse.json({ ok: true }, { headers: rateLimitHeaders(limit) })
 }

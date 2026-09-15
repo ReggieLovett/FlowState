@@ -5,6 +5,8 @@ import { useFormStatus } from 'react-dom'
 import { createItemAction, deleteItemAction, setItemStatusAction } from '@/lib/actions/items'
 import type { ActionState } from '@/lib/actions/schedule'
 import { ITEM_LABELS, suggestEstimate, type ItemKind } from '@/lib/scheduling'
+import { ActionForm } from '@/components/feedback/ActionForm'
+import { FormAlert, useRateLimitActive } from '@/components/feedback/FormAlert'
 import {
   ItemFormModal,
   formatEffort,
@@ -47,10 +49,10 @@ function dueText(item: SubjectItemView, todayISO: string): { text: string; tone:
   return { text: `${noun} ${date}`, tone: 'muted' }
 }
 
-function QuickAddButton() {
+function QuickAddButton({ blocked = false }: { blocked?: boolean }) {
   const { pending } = useFormStatus()
   return (
-    <button type="submit" className="btn btn-sm btn-outline-primary flex-shrink-0" disabled={pending}>
+    <button type="submit" className="btn btn-sm btn-outline-primary flex-shrink-0" disabled={pending || blocked}>
       {pending ? (
         <span className="spinner-border spinner-border-sm" aria-hidden="true" />
       ) : (
@@ -85,6 +87,7 @@ export function SubjectItems({
   const [quickType, setQuickType] = useState<ItemKind>('TASK')
   const [quickState, quickAction] = useActionState(createItemAction, {} as ActionState)
   const quickForm = useRef<HTMLFormElement>(null)
+  const quickLimited = useRateLimitActive(quickState.rateLimit)
 
   // Clear the one-liner after each successful add so the next can be typed.
   useEffect(() => {
@@ -178,14 +181,10 @@ export function SubjectItems({
               required
             />
           )}
-          <QuickAddButton />
+          <QuickAddButton blocked={quickLimited} />
         </form>
       )}
-      {quickState.error && (
-        <p className="text-danger small px-3 mt-n2 mb-2" role="alert">
-          {quickState.error}
-        </p>
-      )}
+      <FormAlert error={quickState.error} rateLimit={quickState.rateLimit} className="mx-3 mt-n1 mb-3" />
 
       {editing && (
         <ItemFormModal open onClose={() => setEditing(null)} subjects={subjects} item={editing} />
@@ -223,7 +222,7 @@ function ItemRow({
 
   return (
     <li className={`item-row${isDone ? ' is-done' : ''}`}>
-      <form action={setItemStatusAction} className="flex-shrink-0">
+      <ActionForm action={setItemStatusAction} className="flex-shrink-0">
         <input type="hidden" name="id" value={item.id} />
         <input type="hidden" name="status" value={isDone ? 'TODO' : 'DONE'} />
         <button
@@ -234,7 +233,7 @@ function ItemRow({
         >
           {isDone && <i className="bi bi-check-lg" aria-hidden="true" />}
         </button>
-      </form>
+      </ActionForm>
 
       <button type="button" className="item-main" onClick={onEdit} disabled={disabled}>
         <span className="d-flex align-items-center gap-2 min-width-0">
@@ -269,7 +268,7 @@ function ItemRow({
       {!disabled && (
         <div className="flex-shrink-0 d-flex align-items-center">
           {confirming ? (
-            <form action={deleteItemAction} className="d-flex gap-1">
+            <ActionForm action={deleteItemAction} className="d-flex gap-1">
               <input type="hidden" name="id" value={item.id} />
               <button type="submit" className="btn btn-sm btn-danger py-0">
                 Delete
@@ -277,7 +276,7 @@ function ItemRow({
               <button type="button" className="btn btn-sm btn-outline-secondary py-0" onClick={() => setConfirming(false)}>
                 Keep
               </button>
-            </form>
+            </ActionForm>
           ) : (
             <button
               type="button"

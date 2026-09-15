@@ -125,6 +125,16 @@ Generated blocks are stamped with `generatedAt`, so a plan can be replaced or
 cleared without touching events entered by hand. Preferences are remembered per
 browser.
 
+**Rate limiting.** Password sign-in is capped per IP (20 attempts in 15
+minutes) and per account (5 failures in 15 minutes, cleared by a correct
+password). The limit is enforced inside the Auth.js credentials check, so
+posting to the Auth.js endpoint directly does not bypass it. Sign-up is capped
+at 10 attempts an hour per IP. Signed-in users have per-minute budgets for
+writes, calendar moves and completions, and a tighter one for saving generated
+plans. Counters live in the `RateLimitBucket` table with IPs and emails hashed,
+because serverless instances do not share memory. API routes answer with `429`,
+`Retry-After` and `RateLimit-*` headers; forms and toasts show a live countdown.
+
 **Theme.** Light and dark, following the system by default, remembered per
 browser and applied before first paint so there is no flash. Every foreground and
 background pair clears WCAG AA in both themes.

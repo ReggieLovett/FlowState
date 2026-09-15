@@ -1,6 +1,7 @@
 'use client'
 
 import { useActionState, useEffect, useRef, useState } from 'react'
+import { FormAlert, useRateLimitActive } from '@/components/feedback/FormAlert'
 import { useFormStatus } from 'react-dom'
 import { CATEGORY_META, CATEGORY_ORDER } from '@/lib/categories'
 import {
@@ -12,10 +13,10 @@ import type { SubjectDTO } from '@/lib/data/subjects'
 
 const INITIAL: ActionState = {}
 
-function Submit({ label }: { label: string }) {
+function Submit({ label, blocked = false }: { label: string; blocked?: boolean }) {
   const { pending } = useFormStatus()
   return (
-    <button type="submit" className="btn btn-primary" disabled={pending}>
+    <button type="submit" className="btn btn-primary" disabled={pending || blocked}>
       {pending && <span className="spinner-border spinner-border-sm me-2" aria-hidden="true" />}
       {label}
     </button>
@@ -36,6 +37,8 @@ export function SubjectFormModal({
     isEdit ? updateSubjectAction : createSubjectAction,
     INITIAL,
   )
+  // Locks the submit button for the length of a rate limit; the alert says why.
+  const limited = useRateLimitActive(state.rateLimit)
   const dialogRef = useRef<HTMLDialogElement>(null)
   const [difficulty, setDifficulty] = useState(subject?.difficulty ?? 5)
 
@@ -67,11 +70,7 @@ export function SubjectFormModal({
         </div>
 
         <div className="p-4">
-          {state.error && (
-            <div className="alert alert-danger py-2 px-3 small" role="alert">
-              {state.error}
-            </div>
-          )}
+          <FormAlert error={state.error} rateLimit={state.rateLimit} />
 
           <div className="mb-3">
             <label htmlFor="subject-name" className="form-label small fw-medium">
@@ -192,7 +191,7 @@ export function SubjectFormModal({
           <button type="button" className="btn btn-outline-secondary" onClick={onClose}>
             Cancel
           </button>
-          <Submit label={isEdit ? 'Save changes' : 'Add subject'} />
+          <Submit label={isEdit ? 'Save changes' : 'Add subject'} blocked={limited} />
         </div>
       </form>
     </dialog>

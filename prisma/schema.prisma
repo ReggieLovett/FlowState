@@ -280,3 +280,25 @@ model ScheduleEvent {
   // regenerate and every clear has to answer before it writes.
   @@index([userId, generatedAt])
 }
+
+// ---------------------------------------------------------------------------
+// Rate limiting
+// ---------------------------------------------------------------------------
+
+/// One fixed-window counter per key. The key is `<policy>:<subject>`, where the
+/// subject is a user id or a SHA-256 of an IP address or email, so no address
+/// is stored in the clear.
+///
+/// Counters live in Postgres rather than in process memory because the app runs
+/// on serverless functions: every instance has its own memory, so an in-memory
+/// limit would multiply by however many instances happen to be warm.
+model RateLimitBucket {
+  key     String   @id
+  count   Int
+  /// timestamptz, so comparisons against now() mean the same instant whatever
+  /// the database session's timezone is.
+  resetAt DateTime @db.Timestamptz(3)
+
+  // Serves the periodic sweep of expired windows.
+  @@index([resetAt])
+}

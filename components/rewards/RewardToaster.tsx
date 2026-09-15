@@ -3,6 +3,9 @@
 import { useEffect, useRef, useState } from 'react'
 import type { CompleteState } from '@/lib/actions/schedule'
 import type { BadgeGlyph } from '@/lib/gamification'
+import type { RateLimited } from '@/lib/rate-limit-shared'
+import { NOTICE_EVENT, type Notice } from '@/components/feedback/notify'
+import { formatCountdown, useRetryCountdown } from '@/components/feedback/useRetryCountdown'
 import { PixelGlyph } from './Pixel'
 
 interface Toast {
@@ -11,6 +14,34 @@ interface Toast {
   title: string
   detail?: string
   tone: 'reward' | 'muted' | 'error'
+  rateLimit?: RateLimited
+}
+
+/** A rate-limit toast stays while the wait is short enough to watch, up to this. */
+const MAX_LIMIT_TOAST_MS = 10_000
+
+function toastDuration(toast: Omit<Toast, 'id'>): number {
+  if (toast.rateLimit) {
+    return Math.min(MAX_LIMIT_TOAST_MS, Math.max(4000, toast.rateLimit.retryAt - Date.now()))
+  }
+  return toast.tone === 'reward' ? 4500 : 3000
+}
+
+/** The wait, ticking, so the toast is never out of date while it is on screen. */
+function LimitDetail({ rateLimit }: { rateLimit: RateLimited }) {
+  const seconds = useRetryCountdown(rateLimit)
+  if (seconds < 0) return null
+  return (
+    <div className="small">
+      {seconds > 0 ? (
+        <>
+          Too many {rateLimit.what}. Try again in <span className="tnum fw-semibold">{formatCountdown(seconds)}</span>.
+        </>
+      ) : (
+        'You can try again now.'
+      )}
+    </div>
+  )
 }
 
 export const REWARD_EVENT = 'flowstate:reward'
@@ -34,13 +65,17 @@ export function RewardToaster() {
       for (const toast of stamped) {
         window.setTimeout(
           () => setToasts((current) => current.filter((t) => t.id !== toast.id)),
-          toast.tone === 'reward' ? 4500 : 3000,
+          toastDuration(toast),
         )
       }
     }
 
     function onReward(event: Event) {
       const state = (event as CustomEvent<CompleteState>).detail
+      if (state.rateLimit) {
+        push([{ glyph: null, title: 'Slow down a little', tone: 'error', rateLimit: state.rateLimit }])
+        return
+      }
       if (state.error) {
         push([{ glyph: null, title: state.error, tone: 'error' }])
         return
@@ -75,8 +110,27 @@ export function RewardToaster() {
       if (items.length > 0) push(items)
     }
 
+    // Refusals from controls that have no form of their own: deletes, toggles,
+    // equip buttons. See components/feedback/notify.ts.
+    function onNotice(event: Event) {
+      const notice = (event as CustomEvent<Notice>).detail
+      push([
+        {
+          glyph: null,
+          title: notice.title,
+          detail: notice.rateLimit ? undefined : notice.detail,
+          tone: notice.tone,
+          rateLimit: notice.rateLimit,
+        },
+      ])
+    }
+
     window.addEventListener(REWARD_EVENT, onReward)
-    return () => window.removeEventListener(REWARD_EVENT, onReward)
+    window.addEventListener(NOTICE_EVENT, onNotice)
+    return () => {
+      window.removeEventListener(REWARD_EVENT, onReward)
+      window.removeEventListener(NOTICE_EVENT, onNotice)
+    }
   }, [])
 
   return (
@@ -89,6 +143,7 @@ export function RewardToaster() {
               {toast.title}
             </div>
             {toast.detail && <div className="small">{toast.detail}</div>}
+            {toast.rateLimit && <LimitDetail rateLimit={toast.rateLimit} />}
           </div>
         </div>
       ))}
