@@ -36,6 +36,9 @@ const blockSchema = z.object({
   category: z.enum(CATEGORIES),
   startsAt: z.iso.datetime(),
   endsAt: z.iso.datetime(),
+  // Written by the planner in the browser, so it arrives as user input like
+  // everything else here: bounded, and only ever rendered as text.
+  planReason: z.string().trim().max(240).nullish(),
 })
 
 const confirmSchema = z
@@ -104,6 +107,7 @@ export async function confirmScheduleAction(
         category: block.category,
         startsAt: new Date(block.startsAt),
         endsAt: new Date(block.endsAt),
+        planReason: block.planReason || null,
       })),
       replace ? { replaceFrom: from, replaceTo: to } : {},
     )

@@ -268,6 +268,11 @@ model ScheduleEvent {
   /// the row, which the UI does not need yet.
   generatedAt DateTime?
 
+  /// One sentence from the planner on why the block sits where it does, shown
+  /// when hovering it. Null for hand-made events, and cleared when the block is
+  /// moved to another time, because the reason described the old slot.
+  planReason String?
+
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 

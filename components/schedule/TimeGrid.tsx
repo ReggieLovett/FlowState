@@ -18,6 +18,7 @@ import { CompleteToggle } from './CompleteToggle'
 import { FormAlert } from '@/components/feedback/FormAlert'
 import type { ActionState } from '@/lib/actions/schedule'
 import { EventFormModal, type SubjectOption } from './EventFormModal'
+import { useReasonTip } from './ReasonTip'
 
 /**
  * Hour-by-hour calendar for one day or a week.
@@ -173,6 +174,7 @@ export function TimeGrid({
   const [editing, setEditing] = useState<ScheduleEventDTO | null>(null)
   const [creating, setCreating] = useState<Date | null>(null)
   const [, startTransition] = useTransition()
+  const reasonTip = useReasonTip()
 
   // Open on the working day rather than at midnight.
   useEffect(() => {
@@ -387,6 +389,10 @@ export function TimeGrid({
     const lanes = override ? 1 : segment.lanes
     const lane = override ? 0 : segment.lane
     const timeText = `${minutesLabel(start)}–${minutesLabel(end)}`
+    // Only blocks the planner placed have a reason, and it is cleared if the
+    // block is moved. The dragged copy gets none: it is under the pointer.
+    const tipContent =
+      !override && event.planReason ? { heading: `Why ${minutesLabel(start)}`, text: event.planReason } : null
 
     return (
       <div
@@ -399,6 +405,7 @@ export function TimeGrid({
           width: `calc(${100 / lanes}% - 4px)`,
           ['--event-color' as string]: color,
         }}
+        {...reasonTip.bind(event.id, tipContent)}
       >
         <button
           type="button"
@@ -545,7 +552,9 @@ export function TimeGrid({
       <div className="tg-hint border-top px-3 py-2">
         <i className="bi bi-hand-index me-1" aria-hidden="true" />
         Drag a block to move it, drag its bottom edge to resize, or click empty time to add one.
+        Click a block to edit or delete it; hover a <i className="bi bi-stars" aria-label="planned" /> block to see why it was planned there.
       </div>
+      {reasonTip.node}
 
       {editing && (
         <EventFormModal open onClose={() => setEditing(null)} subjects={subjects} event={editing} />

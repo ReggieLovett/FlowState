@@ -397,3 +397,27 @@ would downgrade Prisma to 6 and break the app; wait for Prisma to update instead
   app outage. The protected routes need the same database anyway.
 - **Rate-limit IP detection trusts Vercel's headers.** Behind a proxy that passes
   a client's `X-Forwarded-For` through unchanged, IP-keyed limits could be evaded.
+
+---
+
+## 11. Times and timezones
+
+Instants are stored in UTC; the browser shows them in local time. The one place
+that gets this wrong easily is the event dialog, which sends a date and a time
+as typed (`2026-09-24`, `09:00`). Those only mean something in the timezone of
+the person typing them.
+
+The server used to read them in **its own** timezone. On a laptop that is the
+user's, so it looked right. On Vercel it is UTC, so in production every event
+saved from the dialog landed off by the user's UTC offset, and saving an event
+without changing it moved it. The dialog now sends the browser's IANA zone in a
+hidden `timeZone` field, and `lib/zoned-time.ts` converts with the platform's
+Intl data, including daylight-saving changes.
+
+**Rule:** never build a `Date` from a typed date and time on the server with
+`new Date('YYYY-MM-DDTHH:mm')`. Either send an ISO instant from the browser, as
+drag-to-move does, or send the zone and use `wallTimeToInstant`.
+
+Date-only values (a subject's exam date, an item's due date) are stored at UTC
+midnight and must be read with UTC getters, as `examDay()` in the plan dialog
+does.

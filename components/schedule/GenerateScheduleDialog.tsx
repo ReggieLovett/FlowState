@@ -6,6 +6,7 @@ import {
   DEFAULT_PREFS,
   ITEM_LABELS,
   addDaysISO,
+  examsFromItems,
   planCombined,
   toISODate,
   type ItemKind,
@@ -68,6 +69,13 @@ export interface SerialItem {
   priority: number
   /** Non-cancelled minutes already linked to the item, anywhere in time. */
   bookedMinutes: number
+}
+
+/** An exam date, from an exam item open or done. */
+export interface SerialExam {
+  subjectId: string
+  /** YYYY-MM-DD */
+  date: string
 }
 
 type RangeKey = 'week' | 'fortnight' | 'month'
@@ -276,6 +284,7 @@ export function GenerateScheduleDialog({
   subjects,
   events,
   items = [],
+  exams = [],
   weekStartISO,
 }: {
   open: boolean
@@ -283,6 +292,7 @@ export function GenerateScheduleDialog({
   subjects: SerialSubject[]
   events: SerialEvent[]
   items?: SerialItem[]
+  exams?: SerialExam[]
   weekStartISO: string
 }) {
   const dialogRef = useRef<HTMLDialogElement>(null)
@@ -309,6 +319,7 @@ export function GenerateScheduleDialog({
           subjects={subjects}
           events={events}
           items={items}
+          exams={exams}
           weekStartISO={weekStartISO}
         />
       )}
@@ -321,12 +332,14 @@ function PlanBody({
   subjects,
   events,
   items,
+  exams,
   weekStartISO,
 }: {
   onClose: () => void
   subjects: SerialSubject[]
   events: SerialEvent[]
   items: SerialItem[]
+  exams: SerialExam[]
   weekStartISO: string
 }) {
   const [range, setRange] = useState<RangeKey>(() =>
@@ -473,6 +486,15 @@ function PlanBody({
       })
   }, [items, excludedItems, parsedEvents, replace, replaceable])
 
+  // Every known exam per subject, ticked off or not, plus the exam items being
+  // planned. Unticking an exam item leaves it out of revision, not out of
+  // existence: study for its subject still ends the day before it.
+  const examsBySubject = useMemo(() => {
+    const map = examsFromItems(schedulingItems)
+    for (const exam of exams) map.set(exam.subjectId, [...(map.get(exam.subjectId) ?? []), exam.date])
+    return map
+  }, [exams, schedulingItems])
+
   const plan = useMemo(
     () =>
       planCombined(schedulingItems, allSchedulingSubjects, visibleEvents, startDate, endDate, prefs, {
@@ -480,6 +502,7 @@ function PlanBody({
         notBeforeMinutes: now.getHours() * 60 + now.getMinutes(),
         fillStudyTime: prefs.fillStudyTime,
         studySubjects: schedulingSubjects,
+        examsBySubject,
       }),
     [
       schedulingItems,
@@ -491,6 +514,7 @@ function PlanBody({
       todayIso,
       now,
       schedulingSubjects,
+      examsBySubject,
     ],
   )
 
@@ -545,8 +569,27 @@ function PlanBody({
           type: i.type,
           color: subjectColor.get(i.subjectId) ?? '#868E96',
         }))
+        // A subject's own exam date is planned for too (as revision), so it
+        // gets a marker like an exam item, unless one already sits on that day.
+        .concat(
+          schedulingSubjects
+            .filter((s) => s.examDate)
+            .map((s) => ({
+              itemId: `exam:${s.id}`,
+              date: toISODate(s.examDate!),
+              title: `${s.name} exam`,
+              type: 'EXAM' as const,
+              color: s.colorHex,
+            }))
+            .filter(
+              (exam) =>
+                !schedulingItems.some(
+                  (i) => i.type === 'EXAM' && i.subjectId === exam.itemId.slice(5) && i.dueDate && toISODate(i.dueDate) === exam.date,
+                ),
+            ),
+        )
         .filter((d) => d.date >= startDate && d.date <= endDate),
-    [schedulingItems, subjectColor, startDate, endDate],
+    [schedulingItems, schedulingSubjects, subjectColor, startDate, endDate],
   )
   const dueByItem = useMemo(
     () =>
@@ -658,6 +701,9 @@ function PlanBody({
           category: 'DEEP_WORK_SHIFT',
           startsAt: block.startsAt.toISOString(),
           endsAt: block.endsAt.toISOString(),
+          // A block dragged on the timeline is no longer where the planner put
+          // it, so its reason no longer applies.
+          planReason: 'moved' in block && block.moved ? null : block.reason,
         })),
       }),
     [activeBlocks, replace, rangeBounds],

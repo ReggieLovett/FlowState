@@ -5,6 +5,7 @@ import { useRef, useState, type KeyboardEvent, type PointerEvent } from 'react'
 /** The fields a drag reads, shared by React's and the DOM's pointer events. */
 type PointerPoint = { clientX: number; clientY: number; pointerId: number }
 import { ITEM_LABELS, type ItemKind, type PlannedBlock } from '@/lib/scheduling'
+import { useReasonTip } from './ReasonTip'
 
 /**
  * The generated plan as an editable timeline, before anything is saved.
@@ -21,6 +22,11 @@ import { ITEM_LABELS, type ItemKind, type PlannedBlock } from '@/lib/scheduling'
 
 export interface DraftBlock extends PlannedBlock {
   key: string
+  /**
+   * Dragged or resized on the timeline. Its `reason` described where the
+   * planner put it, so it is no longer shown or saved once the block moves.
+   */
+  moved?: boolean
 }
 
 export interface TimelineBusy {
@@ -74,6 +80,7 @@ export function placeBlock(block: DraftBlock, date: string, start: number, end: 
   endsAt.setMinutes(end)
   return {
     ...block,
+    moved: true,
     date,
     startTime: hhmm(start),
     endTime: hhmm(end),
@@ -164,6 +171,7 @@ export function PlanTimeline({
   const drag = useRef<Drag | null>(null)
   const suppressClick = useRef(false)
   const [preview, setPreview] = useState<{ key: string; dayIndex: number; start: number; end: number } | null>(null)
+  const reasonTip = useReasonTip()
 
   // Visible hours: the study window, stretched to include anything outside it,
   // rounded out to whole hours.
@@ -375,11 +383,21 @@ export function PlanTimeline({
                 const tone = problem?.clash || problem?.overlap || problem?.past ? ' is-error' : problem?.late || problem?.outside ? ' is-warn' : ''
                 const label = `${block.title}, ${DAY_LABEL.format(parseISO(block.date))} ${hhmm(start)} to ${hhmm(finish)}`
 
+                // The dragged copy gets no tooltip: it is moving under the pointer.
+                const tipContent = isPreview
+                  ? null
+                  : block.moved
+                    ? { heading: `Moved to ${hhmm(start)}`, text: 'You moved this block, so the planner’s reasoning no longer applies.', muted: true }
+                    : block.reason
+                      ? { heading: `Why ${hhmm(start)}`, text: block.reason }
+                      : null
+
                 return (
                   <div
                     key={block.key}
                     className={`tl-block${tone}${isPreview ? ' is-dragging' : ''}${selectedKey === block.key ? ' is-selected' : ''}`}
                     style={{ left: pct(start), width: `${((finish - start) / span) * 100}%`, ['--event-color' as string]: block.subjectColor }}
+                    {...reasonTip.bind(block.key, tipContent)}
                   >
                     <button
                       type="button"
@@ -393,8 +411,7 @@ export function PlanTimeline({
                         onSelect(block.key)
                       }}
                       onKeyDown={(e) => onKey(e, block, dayIndex)}
-                      aria-label={`${label}. Arrow keys move it, Shift with left or right resizes, Delete removes it.`}
-                      title={`${label}${block.itemTitle ? ` · ${block.subjectName}` : ''}`}
+                      aria-label={`${label}${block.itemTitle ? `, ${block.subjectName}` : ''}. Arrow keys move it, Shift with left or right resizes, Delete removes it.`}
                     >
                       <span className="tl-block-time tnum">
                         {block.itemType && <i className={`bi ${ITEM_LABELS[block.itemType].icon} me-1`} aria-hidden="true" />}
@@ -414,6 +431,7 @@ export function PlanTimeline({
           </div>
         )
       })}
+      {reasonTip.node}
     </div>
   )
 }

@@ -1946,3 +1946,78 @@ dialog[open]::backdrop {
     display: none;
   }
 }
+
+/* ---------------------------------------------------------------------------
+   Planner reasoning tooltip (components/schedule/ReasonTip.tsx)
+--------------------------------------------------------------------------- */
+.plan-tip {
+  position: fixed;
+  /* Above the calendar's sticky headers and the plan dialog's contents. */
+  z-index: 1090;
+  max-width: 17rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+  padding: 0.5rem 0.65rem;
+  border: 1px solid var(--bs-border-color);
+  border-radius: var(--bs-border-radius);
+  background: var(--bs-body-bg);
+  color: var(--bs-body-color);
+  box-shadow: 0 6px 22px -6px rgba(31, 35, 32, 0.28);
+  font-size: 0.78rem;
+  line-height: 1.35;
+  /* Never intercepts the pointer, so it cannot block a drop or a click. */
+  pointer-events: none;
+  animation: plan-tip-in 0.12s ease-out;
+}
+
+[data-bs-theme='dark'] .plan-tip {
+  background: var(--bs-secondary-bg);
+  box-shadow: 0 8px 26px -8px rgba(0, 0, 0, 0.6);
+}
+
+.plan-tip-heading {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  font-weight: 600;
+  font-size: 0.72rem;
+  color: var(--bs-primary);
+  font-variant-numeric: tabular-nums;
+}
+
+.plan-tip.is-muted .plan-tip-heading {
+  color: var(--bs-secondary-color);
+}
+
+.plan-tip-text {
+  color: var(--bs-body-color);
+}
+
+@keyframes plan-tip-in {
+  from {
+    opacity: 0;
+    transform: translateY(3px);
+  }
+}
+
+.plan-tip.is-below {
+  animation-name: plan-tip-in-below;
+}
+
+@keyframes plan-tip-in-below {
+  from {
+    opacity: 0;
+    transform: translateY(-3px);
+  }
+}
+
+/* The planner's reason inside the edit dialog, for devices without hover. */
+.plan-why {
+  display: flex;
+  align-items: flex-start;
+  padding: 0.5rem 0.75rem;
+  border-radius: var(--bs-border-radius);
+  background: var(--bs-primary-bg-subtle);
+  color: var(--bs-body-color);
+}

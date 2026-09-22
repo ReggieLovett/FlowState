@@ -5,6 +5,7 @@ import { usePathname, useRouter, useSearchParams } from 'next/navigation'
 import {
   GenerateScheduleDialog,
   type SerialEvent,
+  type SerialExam,
   type SerialItem,
   type SerialSubject,
 } from './GenerateScheduleDialog'
@@ -19,6 +20,7 @@ export function GenerateScheduleButton({
   subjects,
   events,
   items = [],
+  exams = [],
   weekStartISO,
   className = 'btn btn-outline-primary btn-sm',
   label = 'Generate',
@@ -26,6 +28,7 @@ export function GenerateScheduleButton({
   subjects: SerialSubject[]
   events: SerialEvent[]
   items?: SerialItem[]
+  exams?: SerialExam[]
   weekStartISO: string
   className?: string
   label?: string
@@ -69,6 +72,7 @@ export function GenerateScheduleButton({
         subjects={subjects}
         events={events}
         items={items}
+        exams={exams}
         weekStartISO={weekStartISO}
       />
     </>

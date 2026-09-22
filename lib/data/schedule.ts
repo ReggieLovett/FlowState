@@ -41,6 +41,7 @@ const eventSelect = {
   status: true,
   recurrenceRule: true,
   generatedAt: true,
+  planReason: true,
   subject: { select: { id: true, name: true, code: true, colorHex: true } },
   item: { select: { id: true, title: true, type: true, dueDate: true } },
 } satisfies Prisma.ScheduleEventSelect
@@ -148,9 +149,26 @@ export async function updateEvent(eventId: string, patch: Partial<EventInput>) {
     if (!owned) throw new Error('Subject not found')
   }
 
+  // A planner's reason describes the slot it chose ("gets your fresher
+  // hours"), so it stops being true once the block moves. Cleared only when a
+  // time actually changes: the edit dialog always posts both times, and
+  // renaming a block should not throw its explanation away.
+  let clearReason = false
+  if (patch.startsAt || patch.endsAt) {
+    const current = await prisma.scheduleEvent.findUnique({
+      where: { id_userId: { id: eventId, userId } },
+      select: { startsAt: true, endsAt: true, planReason: true },
+    })
+    clearReason = Boolean(
+      current?.planReason &&
+        ((patch.startsAt && patch.startsAt.getTime() !== current.startsAt.getTime()) ||
+          (patch.endsAt && patch.endsAt.getTime() !== current.endsAt.getTime())),
+    )
+  }
+
   return prisma.scheduleEvent.update({
     where: { id_userId: { id: eventId, userId } },
-    data: patch,
+    data: clearReason ? { ...patch, planReason: null } : patch,
     select: eventSelect,
   })
 }
@@ -276,6 +294,8 @@ export interface GeneratedEventInput {
   startsAt: Date
   endsAt: Date
   notes?: string | null
+  /** The planner's one-sentence reason, shown when hovering the block. */
+  planReason?: string | null
 }
 
 /**
@@ -345,6 +365,7 @@ export async function replaceGeneratedEvents(
         startsAt: block.startsAt,
         endsAt: block.endsAt,
         notes: block.notes ?? null,
+        planReason: block.planReason ?? null,
         isAllDay: false,
         status: 'SCHEDULED' as const,
         generatedAt,

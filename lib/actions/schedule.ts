@@ -11,7 +11,8 @@ import { POLICIES } from '@/lib/rate-limit'
 import { limitUser } from '@/lib/rate-limit-user'
 import type { RateLimited } from '@/lib/rate-limit-shared'
 import type { Category } from '@prisma/client'
-import { dateInputSchema, formId, idSchema, timeInputSchema } from '@/lib/validation/fields'
+import { dateInputSchema, formId, idSchema, timeInputSchema, timeZoneSchema } from '@/lib/validation/fields'
+import { wallTimeToInstant } from '@/lib/zoned-time'
 
 /**
  * Server Actions for schedule events.
@@ -47,6 +48,7 @@ const eventSchema = z
     location: z.string().trim().max(200).optional(),
     notes: z.string().trim().max(2000).optional(),
     isAllDay: z.boolean().optional(),
+    timeZone: timeZoneSchema.optional(),
   })
   .refine((v) => v.isAllDay || (v.startTime && v.endTime), {
     message: 'Pick a start and an end time.',
@@ -57,9 +59,17 @@ const eventSchema = z
     path: ['endTime'],
   })
 
-/** Combines the date and time inputs into a Date in the server's timezone. */
-function combine(date: string, time: string): Date {
-  return new Date(`${date}T${time}:00`)
+/**
+ * Combines the date and time inputs into an instant, in the timezone of the
+ * browser that typed them.
+ *
+ * This used to use the server's timezone. That is the user's own on a laptop
+ * and UTC on Vercel, so in production every event saved from the dialog landed
+ * off by the user's UTC offset, and saving an event unchanged moved it. The
+ * server's zone is kept only as a fallback for a client that sends none.
+ */
+function combine(date: string, time: string, timeZone: string | undefined): Date {
+  return timeZone ? wallTimeToInstant(date, time, timeZone) : new Date(`${date}T${time}:00`)
 }
 
 function parseForm(formData: FormData) {
@@ -77,6 +87,7 @@ function parseForm(formData: FormData) {
     location: formData.get('location') ?? undefined,
     notes: formData.get('notes') ?? undefined,
     isAllDay: formData.get('isAllDay') === 'on',
+    timeZone: formData.get('timeZone') || undefined,
   })
 }
 
@@ -99,8 +110,8 @@ export async function createEventAction(
       title: v.title,
       category: v.category,
       subjectId: v.subjectId ? v.subjectId : null,
-      startsAt: combine(v.date, v.isAllDay ? '00:00' : v.startTime!),
-      endsAt: combine(v.date, v.isAllDay ? '23:59' : v.endTime!),
+      startsAt: combine(v.date, v.isAllDay ? '00:00' : v.startTime!, v.timeZone),
+      endsAt: combine(v.date, v.isAllDay ? '23:59' : v.endTime!, v.timeZone),
       isAllDay: v.isAllDay ?? false,
       location: v.location || null,
       notes: v.notes || null,
@@ -139,8 +150,8 @@ export async function updateEventAction(
       title: v.title,
       category: v.category,
       subjectId: v.subjectId ? v.subjectId : null,
-      startsAt: combine(v.date, v.isAllDay ? '00:00' : v.startTime!),
-      endsAt: combine(v.date, v.isAllDay ? '23:59' : v.endTime!),
+      startsAt: combine(v.date, v.isAllDay ? '00:00' : v.startTime!, v.timeZone),
+      endsAt: combine(v.date, v.isAllDay ? '23:59' : v.endTime!, v.timeZone),
       isAllDay: v.isAllDay ?? false,
       location: v.location || null,
       notes: v.notes || null,

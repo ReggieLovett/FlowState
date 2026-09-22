@@ -1,4 +1,5 @@
 import { z } from 'zod'
+import { isTimeZone } from '@/lib/zoned-time'
 
 /**
  * Field rules shared by every entry point: Server Actions, Route Handlers and the
@@ -88,3 +89,10 @@ export const timeInputSchema = z
   .string()
   .trim()
   .regex(/^([01]\d|2[0-3]):[0-5]\d$/, 'Pick a valid time.')
+
+/** An IANA timezone name as reported by the browser, e.g. "Asia/Manila". */
+export const timeZoneSchema = z
+  .string()
+  .trim()
+  .max(64)
+  .refine(isTimeZone, { message: 'Unknown timezone.' })

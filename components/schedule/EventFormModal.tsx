@@ -4,7 +4,12 @@ import { useActionState, useEffect, useRef, useState } from 'react'
 import { FormAlert, useRateLimitActive } from '@/components/feedback/FormAlert'
 import { useFormStatus } from 'react-dom'
 import { CATEGORY_META, CATEGORY_ORDER } from '@/lib/categories'
-import { createEventAction, updateEventAction, type ActionState } from '@/lib/actions/schedule'
+import {
+  createEventAction,
+  deleteEventAction,
+  updateEventAction,
+  type ActionState,
+} from '@/lib/actions/schedule'
 import { toDateInput, toTimeInput } from '@/lib/format'
 import type { ScheduleEventDTO } from '@/lib/data/schedule'
 
@@ -31,12 +36,45 @@ function defaultStart(day?: Date): Date {
   return start
 }
 
+/**
+ * The form has two submit buttons, save and delete, and useFormStatus cannot
+ * say which one fired. The delete button carries `intent=delete`, which the
+ * browser includes in the submitted FormData, so each button can show its own
+ * spinner and both can be disabled while either is in flight.
+ */
+const DELETE_INTENT = 'delete'
+
+function useIntent() {
+  const { pending, data } = useFormStatus()
+  return { pending, deleting: pending && data?.get('intent') === DELETE_INTENT }
+}
+
 function Submit({ label, blocked = false }: { label: string; blocked?: boolean }) {
-  const { pending } = useFormStatus()
+  const { pending, deleting } = useIntent()
   return (
     <button type="submit" className="btn btn-primary" disabled={pending || blocked}>
-      {pending && <span className="spinner-border spinner-border-sm me-2" aria-hidden="true" />}
+      {pending && !deleting && <span className="spinner-border spinner-border-sm me-2" aria-hidden="true" />}
       {label}
+    </button>
+  )
+}
+
+function DeleteSubmit({ action }: { action: (formData: FormData) => void }) {
+  const { pending, deleting } = useIntent()
+  return (
+    <button
+      type="submit"
+      name="intent"
+      value={DELETE_INTENT}
+      // Posts the same form, id included, to the delete action instead.
+      formAction={action}
+      // An event with a cleared title should still be deletable.
+      formNoValidate
+      className="btn btn-sm btn-danger"
+      disabled={pending}
+    >
+      {deleting && <span className="spinner-border spinner-border-sm me-1" aria-hidden="true" />}
+      Delete
     </button>
   )
 }
@@ -66,8 +104,12 @@ export function EventFormModal({
     isEdit ? updateEventAction : createEventAction,
     INITIAL,
   )
+  const [deleteState, deleteAction] = useActionState(deleteEventAction, INITIAL)
+  // Deleting takes two clicks: a block removed by a stray click cannot be
+  // brought back, and a completed one takes its XP with it.
+  const [confirmingDelete, setConfirmingDelete] = useState(false)
   // Locks the submit button for the length of a rate limit; the alert says why.
-  const limited = useRateLimitActive(state.rateLimit)
+  const limited = useRateLimitActive(state.rateLimit ?? deleteState.rateLimit)
   const dialogRef = useRef<HTMLDialogElement>(null)
   const [allDay, setAllDay] = useState(event?.isAllDay ?? false)
 
@@ -78,10 +120,10 @@ export function EventFormModal({
     if (!open && dialog.open) dialog.close()
   }, [open])
 
-  // The action returns { ok: true } once the write has landed.
+  // Either action returns { ok: true } once the write has landed.
   useEffect(() => {
-    if (state.ok) onClose()
-  }, [state.ok, onClose])
+    if (state.ok || deleteState.ok) onClose()
+  }, [state.ok, deleteState.ok, onClose])
 
   // A new event on a chosen day arrives as that day at local midnight, which is
   // a useless default start time. Fall back to a plausible working hour instead;
@@ -99,6 +141,10 @@ export function EventFormModal({
     >
       <form action={formAction}>
         {isEdit && <input type="hidden" name="id" value={event!.id} />}
+        {/* The date and time fields are wall-clock values in this browser's
+            timezone; the server needs the zone to turn them into an instant.
+            Safe to read during render: this dialog only mounts on the client. */}
+        <input type="hidden" name="timeZone" value={Intl.DateTimeFormat().resolvedOptions().timeZone} />
 
         <div className="d-flex align-items-center justify-content-between border-bottom px-4 py-3">
           <h2 className="h6 fw-semibold mb-0">{isEdit ? 'Edit event' : 'New event'}</h2>
@@ -111,7 +157,21 @@ export function EventFormModal({
         </div>
 
         <div className="p-4">
-          <FormAlert error={state.error} rateLimit={state.rateLimit} />
+          <FormAlert
+            error={state.error ?? deleteState.error}
+            rateLimit={state.rateLimit ?? deleteState.rateLimit}
+          />
+
+          {/* Repeats the hover note, since phones have no hover. */}
+          {event?.planReason && (
+            <p className="plan-why small mb-3">
+              <i className="bi bi-stars text-primary me-2" aria-hidden="true" />
+              <span>
+                <span className="fw-medium">Why this time: </span>
+                {event.planReason}
+              </span>
+            </p>
+          )}
 
           <div className="mb-3">
             <label htmlFor="title" className="form-label small fw-medium">
@@ -254,7 +314,32 @@ export function EventFormModal({
           </div>
         </div>
 
-        <div className="d-flex justify-content-end gap-2 border-top px-4 py-3 bg-body-tertiary">
+        <div className="d-flex flex-wrap align-items-center justify-content-end gap-2 border-top px-4 py-3 bg-body-tertiary">
+          {isEdit &&
+            (confirmingDelete ? (
+              <div className="d-flex align-items-center gap-2 me-auto" role="group" aria-label="Confirm delete">
+                <span className="small">
+                  {event!.status === 'COMPLETED' ? 'Delete it and the XP it earned?' : 'Delete this event?'}
+                </span>
+                <DeleteSubmit action={deleteAction} />
+                <button
+                  type="button"
+                  className="btn btn-sm btn-link text-secondary px-1"
+                  onClick={() => setConfirmingDelete(false)}
+                >
+                  Keep
+                </button>
+              </div>
+            ) : (
+              <button
+                type="button"
+                className="btn btn-outline-danger me-auto"
+                onClick={() => setConfirmingDelete(true)}
+              >
+                <i className="bi bi-trash3 me-1" aria-hidden="true" />
+                Delete
+              </button>
+            ))}
           <button type="button" className="btn btn-outline-secondary" onClick={onClose}>
             Cancel
           </button>

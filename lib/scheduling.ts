@@ -8,11 +8,19 @@
  *
  * Two rules make the output usable rather than merely fair:
  *
- *   1. Nothing is placed after a subject's exam date, so revision cannot be
- *      scheduled for a paper that has already been sat.
+ *   1. Study for a subject stops the day before its last exam, whether that
+ *      exam is the subject's own exam date or an exam item filed under it, and
+ *      nothing is ever revised for an exam that has already been sat.
+ *      Exams are stored as dates without a time, so the exam day itself is
+ *      off-limits: a block there could land after the paper.
  *   2. No subject may take more than `maxBlocksPerSubjectPerDay` on one day.
  *      Within that, blocks either alternate between subjects or stack into
  *      longer single-subject sessions, depending on `interleave`.
+ *
+ * Within those rules each slot goes to the subject that scores best on four
+ * factors: how far it is behind its share, how close its exam is, whether the
+ * time of day suits its difficulty, and how long since it was last studied.
+ * Every block records, in one sentence, which factor won it the slot.
  *
  * Pure functions only. No storage access, no clock reads except the default
  * argument on `planSchedule`, so it is trivially testable.
@@ -42,6 +50,10 @@ export interface ExistingEvent {
   status: string
   /** True when a previous run of this engine created the row. */
   isGenerated?: boolean
+  /** Shown in a block's reason when it slots in right after this event. */
+  title?: string
+  /** The item the event works on, when it is an item session. */
+  itemId?: string | null
 }
 
 /** Serialised form of ExistingEvent as passed from server to client. */
@@ -112,6 +124,11 @@ export interface GeneratedBlock {
   duration: number
   startsAt: Date
   endsAt: Date
+  /**
+   * One sentence on why the block sits where it does, derived from the factor
+   * that actually won it the slot. Shown when hovering the block.
+   */
+  reason: string
 }
 
 export interface DayPlan {
@@ -193,6 +210,30 @@ function makeDate(dateStr: string, minutes: number): Date {
 /** Minutes since midnight, rounded up to the next multiple of `step`. */
 function ceilToStep(minutes: number, step: number): number {
   return Math.ceil(minutes / step) * step
+}
+
+// ---------------------------------------------------------------------------
+// Exams
+// ---------------------------------------------------------------------------
+
+/**
+ * Every exam a subject is known to have, as local YYYY-MM-DD, earliest first.
+ *
+ * Exams live in two places: the subject's own exam date and exam items filed
+ * under it. This planner used to read only the first, so a subject whose exam
+ * was entered as an item was given study time straight past it. The caller
+ * passes the items' dates in, including exams already ticked off, because a
+ * finished exam still marks where study for that subject should stop.
+ */
+function examDatesFor(subject: SchedulingSubject, examsBySubject?: Map<string, string[]>): string[] {
+  const dates = new Set(examsBySubject?.get(subject.id) ?? [])
+  if (subject.examDate) dates.add(toISODate(subject.examDate))
+  return [...dates].sort()
+}
+
+/** The last day a subject may be studied: the day before its final exam. */
+function lastStudyDay(exams: string[]): string | null {
+  return exams.length === 0 ? null : addDaysISO(exams[exams.length - 1], -1)
 }
 
 // ---------------------------------------------------------------------------
@@ -280,6 +321,7 @@ export function scoreSubjects(
   subjects: SchedulingSubject[],
   existingEvents: ExistingEvent[],
   fromDate: string,
+  examsBySubject?: Map<string, string[]>,
 ): ScoredSubject[] {
   const minutesBySubject = new Map<string, number>()
   for (const event of existingEvents) {
@@ -294,9 +336,12 @@ export function scoreSubjects(
   }
 
   return subjects.map((subject) => {
-    const daysUntilExam = subject.examDate
-      ? daysBetween(fromDate, toISODate(subject.examDate))
-      : null
+    // Urgency follows the next exam still ahead, not the last one: a midterm in
+    // three days matters more today than a final in two months. When every exam
+    // is behind, the most recent one scores the subject as finished.
+    const exams = examDatesFor(subject, examsBySubject)
+    const reference = exams.find((e) => e >= fromDate) ?? exams[exams.length - 1] ?? null
+    const daysUntilExam = reference ? daysBetween(fromDate, reference) : null
     const scheduledMinutes = minutesBySubject.get(subject.id) ?? 0
     const prox = examProximityScore(daysUntilExam)
     const diff = difficultyScore(subject.difficulty)
@@ -333,6 +378,8 @@ interface Allocation {
   remaining: number
   /** Last date this subject may be studied, or null for no limit. */
   lastDate: string | null
+  /** Every known exam, earliest first, for the exam-pressure factor. */
+  exams: string[]
   placed: number
 }
 
@@ -426,12 +473,71 @@ export function allocateBlocks(
 }
 
 /**
- * The next subject to place, given what has already gone on this day.
+ * How much each factor counts when choosing who gets a slot. `need` dominates
+ * so the split set by `allocateBlocks` holds; the other three only decide
+ * *which* of the subjects still owed time is best placed *here*.
+ */
+const PICK_WEIGHTS = { need: 1, pressure: 0.7, energy: 0.25, spacing: 0.3 } as const
+type PickFactor = keyof typeof PICK_WEIGHTS
+
+interface Candidate {
+  allocation: Allocation
+  /** 0-1: share of its owed blocks still unplaced. */
+  need: number
+  /** 0-1: ramps up over the fortnight before the subject's next exam. */
+  pressure: number
+  /** 0-1: how well this time of day suits the subject's difficulty. */
+  energy: number
+  /** 0-1: how long since the subject last had a session. */
+  spacing: number
+  score: number
+  daysToExam: number | null
+  daysSince: number | null
+  /** 1 at the start of the study window, 0 at the last slot that fits. */
+  freshness: number
+}
+
+interface SlotContext {
+  date: string
+  freshness: number
+  placedTodayBySubject: Map<string, number>
+  lastSessionBefore: (subjectId: string, date: string) => string | null
+}
+
+function candidateFor(allocation: Allocation, ctx: SlotContext): Candidate {
+  const { subject } = allocation
+  const need = allocation.remaining / Math.max(allocation.owed, 1)
+
+  const nextExam = allocation.exams.find((e) => e > ctx.date) ?? null
+  const daysToExam = nextExam ? daysBetween(ctx.date, nextExam) : null
+  const pressure = daysToExam === null ? 0 : Math.min(1, Math.max(0, 1 - (daysToExam - 1) / 14))
+
+  // Hard subjects score well early in the window, when attention is freshest;
+  // easy ones score well late, so they do not take the good hours.
+  const difficulty = (Math.min(10, Math.max(1, subject.difficulty)) - 1) / 9
+  const energy = ctx.freshness * difficulty + (1 - ctx.freshness) * (1 - difficulty)
+
+  const placedToday = ctx.placedTodayBySubject.get(subject.id) ?? 0
+  const last = ctx.lastSessionBefore(subject.id, ctx.date)
+  const daysSince = placedToday > 0 ? 0 : last ? daysBetween(last, ctx.date) : null
+  // Spaced sessions are remembered better than massed ones, so a subject that
+  // has gone a few days without a session is preferred over one studied today.
+  const spacing = placedToday > 0 ? 0 : daysSince === null ? 1 : Math.min(1, daysSince / 3)
+
+  const score =
+    PICK_WEIGHTS.need * need +
+    PICK_WEIGHTS.pressure * pressure +
+    PICK_WEIGHTS.energy * energy +
+    PICK_WEIGHTS.spacing * spacing
+
+  return { allocation, need, pressure, energy, spacing, score, daysToExam, daysSince, freshness: ctx.freshness }
+}
+
+/**
+ * The next subject to place, and why it won.
  *
- * Preference order: relative deficit first, so a subject that is furthest from
- * its target catches up; priority as the tie-break.
- *
- * The per-day cap is hard, because it is a number the user typed in.
+ * The per-day cap is hard, because it is a number the user typed in, and so is
+ * the study cutoff before each subject's last exam.
  *
  * With rotation on, the subject just placed steps aside whenever anyone else
  * can take the slot; if nobody can, it takes it, since a plan with holes in it
@@ -439,42 +545,85 @@ export function allocateBlocks(
  * placed keeps the next slot until it reaches its daily limit, which gives
  * longer single-subject sessions.
  */
-function pickAllocation(
+function pickSlot(
   allocations: Allocation[],
-  date: string,
-  placedTodayBySubject: Map<string, number>,
   prefs: SchedulingPrefs,
   avoidSubjectId: string | null,
-): Allocation | undefined {
+  ctx: SlotContext,
+): { allocation: Allocation; reason: string } | undefined {
   const pool = allocations.filter(
     (a) =>
       a.remaining > 0 &&
-      (a.lastDate === null || date <= a.lastDate) &&
-      (placedTodayBySubject.get(a.subject.id) ?? 0) < prefs.maxBlocksPerSubjectPerDay,
+      (a.lastDate === null || ctx.date <= a.lastDate) &&
+      (ctx.placedTodayBySubject.get(a.subject.id) ?? 0) < prefs.maxBlocksPerSubjectPerDay,
   )
   if (pool.length === 0) return undefined
 
   if (!prefs.interleave && avoidSubjectId) {
     const current = pool.find((a) => a.subject.id === avoidSubjectId)
-    if (current) return current
+    if (current) return { allocation: current, reason: 'Kept with the block before it for one longer session.' }
   }
 
   const rotated =
     prefs.interleave && avoidSubjectId && pool.length > 1
       ? pool.filter((a) => a.subject.id !== avoidSubjectId)
       : pool
-  const candidates = rotated.length > 0 ? rotated : pool
+  const ranked = (rotated.length > 0 ? rotated : pool)
+    .map((a) => candidateFor(a, ctx))
+    .sort((x, y) => y.score - x.score || y.allocation.subject.priorityScore - x.allocation.subject.priorityScore)
 
-  return candidates.reduce((best, candidate) => {
-    const deficit = candidate.remaining / Math.max(candidate.owed, 1)
-    const bestDeficit = best.remaining / Math.max(best.owed, 1)
-    if (deficit !== bestDeficit) return deficit > bestDeficit ? candidate : best
-    return candidate.subject.priorityScore > best.subject.priorityScore ? candidate : best
-  })
+  const [winner, runnerUp] = ranked
+  return { allocation: winner.allocation, reason: explainPick(winner, runnerUp ?? null) }
+}
+
+/**
+ * One sentence on why `winner` got the slot.
+ *
+ * The explanation names the factor that separated it from the next-best
+ * subject, weighted as the picker weighed it, so it describes the decision that
+ * was actually made rather than a plausible story told afterwards. With no
+ * competitor for the slot, the winner's own strongest factor stands in.
+ */
+function explainPick(winner: Candidate, runnerUp: Candidate | null): string {
+  const factors = Object.keys(PICK_WEIGHTS) as PickFactor[]
+  const margin = (f: PickFactor) => PICK_WEIGHTS[f] * (winner[f] - (runnerUp ? runnerUp[f] : 0))
+  // `need` is ~1 for every subject at the start, so without a competitor it
+  // would always "win" and say nothing useful. Prefer a factor with a story.
+  const pool = runnerUp ? factors : factors.filter((f) => f !== 'need')
+  const top = pool.reduce((best, f) => (margin(f) > margin(best) ? f : best), pool[0])
+  const subject = winner.allocation.subject
+
+  if (margin(top) > 0.01) {
+    const n = winner.daysToExam
+    if (top === 'pressure' && n !== null) {
+      if (n <= 1) return 'Final review, the day before the exam.'
+      if (n <= 7) return `Exam in ${n} days, so revision steps up.`
+      return `Exam in ${n} days, so it gets steady time now.`
+    }
+    if (top === 'energy') {
+      if (subject.difficulty >= 6 && winner.freshness >= 0.5) return 'Harder subject, so it gets your fresher hours.'
+      if (subject.difficulty <= 5 && winner.freshness < 0.5) return 'Lighter subject, saved for later in the day.'
+    }
+    if (top === 'spacing') {
+      if (winner.daysSince === null) return 'First session in this plan, to get it started.'
+      if (winner.daysSince >= 2) return `${winner.daysSince} days since its last session. Spacing helps it stick.`
+    }
+    if (top === 'need' && runnerUp) return 'Behind its share of your week, so it catches up.'
+  }
+
+  // The scores tied or the leading factor had nothing specific to say, so the
+  // slot went on overall priority. Say what that priority is made of.
+  const why = subject.reasons.slice(0, 2).join(', ').toLowerCase()
+  return why ? `Highest priority for this slot (${why}).` : 'Keeps its share of your week on track.'
 }
 
 function overlaps(startA: number, endA: number, startB: number, endB: number): boolean {
   return startA < endB && startB < endA
+}
+
+/** Short enough for a one-line reason. */
+function shortTitle(title: string): string {
+  return title.length > 26 ? `${title.slice(0, 25).trimEnd()}…` : title
 }
 
 // ---------------------------------------------------------------------------
@@ -486,6 +635,22 @@ export interface PlanOptions {
   notBefore?: string
   /** Minutes since midnight before which nothing may start on `notBefore`. */
   notBeforeMinutes?: number
+  /**
+   * Every known exam date per subject, local YYYY-MM-DD, from exam items done
+   * or not. Merged with each subject's own `examDate`.
+   */
+  examsBySubject?: Map<string, string[]>
+  /**
+   * Dates on which each subject already has a session this planner should
+   * count for spacing, such as the item sessions `planCombined` placed first.
+   */
+  priorSessions?: Map<string, string[]>
+  /**
+   * Minutes each subject already received from an earlier pass. Counted only
+   * by the warnings, so they never call a subject short of time it was given
+   * as item sessions or exam revision.
+   */
+  priorMinutes?: Map<string, number>
 }
 
 export function planSchedule(
@@ -510,7 +675,7 @@ export function planSchedule(
     scored: [],
   }
 
-  const scored = scoreSubjects(subjects, existingEvents, startDate).sort(
+  const scored = scoreSubjects(subjects, existingEvents, startDate, options.examsBySubject).sort(
     (a, b) => b.priorityScore - a.priorityScore,
   )
   if (scored.length === 0) return empty
@@ -545,6 +710,25 @@ export function planSchedule(
     eventsByDate.set(key, list)
   }
 
+  // When each subject last had a session, for spacing. Seeded from the
+  // calendar and from sessions placed before this pass; each block placed
+  // below is added as it goes, so later days see earlier ones.
+  const sessionDates = new Map<string, string[]>()
+  const addSession = (subjectId: string, date: string) => {
+    const list = sessionDates.get(subjectId) ?? []
+    list.push(date)
+    sessionDates.set(subjectId, list)
+  }
+  for (const event of existingEvents) {
+    if (event.subjectId && event.status !== 'CANCELLED') addSession(event.subjectId, toISODate(event.startsAt))
+  }
+  for (const [subjectId, list] of options.priorSessions ?? []) for (const date of list) addSession(subjectId, date)
+  const lastSessionBefore = (subjectId: string, date: string) =>
+    (sessionDates.get(subjectId) ?? []).reduce<string | null>(
+      (latest, d) => (d < date && (latest === null || d > latest) ? d : latest),
+      null,
+    )
+
   // Only focus blocks count against the daily goal. A day full of lectures
   // still gets study time wherever it has gaps; the lectures block their own
   // slots but do not spend the study budget. Blocks from an earlier run do
@@ -561,12 +745,14 @@ export function planSchedule(
     budgetByDate.set(date, Math.max(0, prefs.dailyGoalMinutes - prior))
   }
 
-  // How many blocks each subject could take before its exam, so the allocator
-  // never owes a subject more than the calendar can give it.
+  // Each subject's exams, and the last day it may be studied, which is the day
+  // before its final exam. Capacity counts only the days up to that cutoff, so
+  // the allocator never owes a subject time the calendar cannot give it.
+  const examsById = new Map(scored.map((s) => [s.id, examDatesFor(s, options.examsBySubject)]))
   const capacityBySubject = new Map<string, number>()
   for (const subject of scored) {
-    const lastDate = subject.examDate ? toISODate(subject.examDate) : null
-    const usableDays = lastDate === null ? dates.length : dates.filter((d) => d <= lastDate).length
+    const cutoff = lastStudyDay(examsById.get(subject.id)!)
+    const usableDays = cutoff === null ? dates.length : dates.filter((d) => d <= cutoff).length
     capacityBySubject.set(subject.id, usableDays * prefs.maxBlocksPerSubjectPerDay)
   }
 
@@ -583,22 +769,26 @@ export function planSchedule(
     subject,
     owed: owedBySubject.get(subject.id) ?? 0,
     remaining: owedBySubject.get(subject.id) ?? 0,
-    lastDate: subject.examDate ? toISODate(subject.examDate) : null,
+    lastDate: lastStudyDay(examsById.get(subject.id)!),
+    exams: examsById.get(subject.id)!,
     placed: 0,
   }))
 
   const blocks: GeneratedBlock[] = []
   const byDay: DayPlan[] = []
+  // The last slot start that still fits a block, for the time-of-day factor.
+  const lastStart = Math.max(windowStart + 1, windowEnd - prefs.blockDuration)
 
   for (const date of dates) {
     const dayEvents = eventsByDate.get(date) ?? []
 
     const occupied = dayEvents.map((e) => {
-      if (e.isAllDay) return { start: 0, end: 24 * 60 }
+      const base = { title: e.title, generated: Boolean(e.isGenerated) }
+      if (e.isAllDay) return { ...base, start: 0, end: 24 * 60 }
       const start = e.startsAt.getHours() * 60 + e.startsAt.getMinutes()
       const rawEnd = e.endsAt.getHours() * 60 + e.endsAt.getMinutes()
       // An event running past midnight reads as an end before its start.
-      return { start, end: rawEnd <= start ? 24 * 60 : rawEnd }
+      return { ...base, start, end: rawEnd <= start ? 24 * 60 : rawEnd }
     })
 
     let budget = budgetByDate.get(date) ?? 0
@@ -609,9 +799,24 @@ export function planSchedule(
       cursor = Math.max(cursor, ceilToStep(options.notBeforeMinutes, 5))
     }
 
+    // Blocks already on this day count toward each subject's per-day limit:
+    // sessions an earlier pass placed, and blocks from an earlier run of the
+    // planner. Without the second, generating a week twice added a block per
+    // day on top of the first run and broke the limit the user set.
     const placedTodayBySubject = new Map<string, number>()
+    const bump = (subjectId: string) =>
+      placedTodayBySubject.set(subjectId, (placedTodayBySubject.get(subjectId) ?? 0) + 1)
+    for (const [subjectId, list] of options.priorSessions ?? []) {
+      for (const x of list) if (x === date) bump(subjectId)
+    }
+    for (const e of dayEvents) {
+      if (e.isGenerated && e.subjectId && !e.isAllDay) bump(e.subjectId)
+    }
     let placedToday = 0
     let lastSubjectId: string | null = null
+    // A real commitment the cursor just stepped past, named in the next
+    // block's reason when that block starts right after it.
+    let afterBusy: { title: string; end: number } | null = null
 
     while (budget >= prefs.blockDuration && cursor + prefs.blockDuration <= windowEnd) {
       const slotEnd = cursor + prefs.blockDuration
@@ -619,19 +824,29 @@ export function planSchedule(
 
       if (clash) {
         cursor = clash.end + prefs.breakDuration
+        // Only things the user put there. Naming a block this planner placed
+        // ("right after Chemistry · Focus block") explains nothing.
+        afterBusy = clash.title && !clash.generated ? { title: clash.title, end: clash.end } : null
         continue
       }
 
-      const allocation = pickAllocation(
-        allocations,
+      const freshness = 1 - Math.min(1, Math.max(0, (cursor - windowStart) / (lastStart - windowStart)))
+      const picked = pickSlot(allocations, prefs, lastSubjectId, {
         date,
+        freshness,
         placedTodayBySubject,
-        prefs,
-        lastSubjectId,
-      )
-      if (!allocation) break
+        lastSessionBefore,
+      })
+      if (!picked) break
 
+      const { allocation } = picked
       const { subject } = allocation
+      const reason =
+        afterBusy && cursor === afterBusy.end + prefs.breakDuration
+          ? `${picked.reason} Slots in right after ${shortTitle(afterBusy.title)}.`
+          : picked.reason
+      afterBusy = null
+
       const block: GeneratedBlock = {
         subjectId: subject.id,
         subjectName: subject.name,
@@ -643,6 +858,7 @@ export function planSchedule(
         duration: prefs.blockDuration,
         startsAt: makeDate(date, cursor),
         endsAt: makeDate(date, slotEnd),
+        reason,
       }
       blocks.push(block)
       dayBlocks.push(block)
@@ -650,9 +866,10 @@ export function planSchedule(
       allocation.remaining -= 1
       allocation.placed += 1
       placedTodayBySubject.set(subject.id, (placedTodayBySubject.get(subject.id) ?? 0) + 1)
+      addSession(subject.id, date)
       lastSubjectId = subject.id
       budget -= prefs.blockDuration
-      occupied.push({ start: cursor, end: slotEnd })
+      occupied.push({ start: cursor, end: slotEnd, title: undefined, generated: true })
       placedToday += 1
 
       const needsLongBreak =
@@ -692,7 +909,7 @@ export function planSchedule(
     days: byDay.filter((d) => d.blocks.length > 0).length,
     unplaced,
     emptyDays: byDay.filter((d) => d.blocks.length === 0).length,
-    warnings: buildWarnings(bySubject, unplaced, prefs),
+    warnings: buildWarnings(bySubject, unplaced, prefs, examsById, notBefore, options.priorMinutes),
     scored,
   }
 }
@@ -705,6 +922,9 @@ function buildWarnings(
   bySubject: SubjectPlan[],
   unplaced: number,
   prefs: SchedulingPrefs,
+  examsById: Map<string, string[]>,
+  today: string,
+  priorMinutes?: Map<string, number>,
 ): string[] {
   const warnings: string[] = []
 
@@ -716,9 +936,24 @@ function buildWarnings(
   }
 
   for (const entry of bySubject) {
-    const { subject, minutes } = entry
+    const { subject } = entry
+    const minutes = entry.minutes + (priorMinutes?.get(subject.id) ?? 0)
     const { daysUntilExam } = subject
 
+    // Explained rather than left as an unexplained empty row: study stops the
+    // day before a subject's last exam, so these get nothing on purpose.
+    const exams = examsById.get(subject.id) ?? []
+    const lastExam = exams[exams.length - 1]
+    if (lastExam && lastExam < today) {
+      warnings.push(
+        `${subject.name} gets no time: its last exam was ${formatISOShort(lastExam)}. Add a later exam if there is one.`,
+      )
+      continue
+    }
+    if (lastExam && lastExam === today) {
+      warnings.push(`${subject.name}'s exam is today, so no more study was planned for it.`)
+      continue
+    }
     if (daysUntilExam !== null && daysUntilExam < 0) {
       warnings.push(`${subject.name} has an exam date in the past. Update it or untick the subject.`)
       continue
@@ -767,6 +1002,14 @@ export interface SchedulingItem {
   priority: number
   /** Minutes already on the calendar for this item that will survive the save. */
   bookedMinutes: number
+  /**
+   * The effort is the planner's own suggestion rather than work the user
+   * committed to, as with revision for a subject's exam date. Such work never
+   * pushes a day past the daily goal or a subject past its per-day limit: the
+   * over-goal pass exists to meet deadlines the user set, not to satisfy a
+   * guess, and would otherwise cram a day's worth of revision into one day.
+   */
+  flexible?: boolean
 }
 
 /** Typical effort at average difficulty, before scaling. */
@@ -821,6 +1064,12 @@ export interface ItemPlanEntry {
   /** Latest day this item's work may land on. */
   lastDate: string
   overdue: boolean
+  /**
+   * Set when the item was deliberately not planned: an exam that has already
+   * been sat, or one with no day left before it. Revision after the paper is
+   * pointless, so these get nothing rather than "as soon as possible".
+   */
+  skipped?: 'exam-passed' | 'no-day-left'
 }
 
 export interface ItemPlan {
@@ -976,6 +1225,21 @@ export function planItems(
       const neededMinutes = Math.max(0, effortMinutes - item.bookedMinutes)
 
       const dueISO = item.dueDate ? toISODate(item.dueDate) : null
+
+      // An exam is an event, not a deadline that can slip: revision has to
+      // happen before it or not at all. It used to count as "overdue" once its
+      // date passed and be planned as soon as possible, which filled the next
+      // few days with revision for a paper already sat. The exam day itself is
+      // also out, since exams have no time and a block could land after it.
+      if (item.type === 'EXAM' && dueISO) {
+        const dayBefore = addDaysISO(dueISO, -1)
+        const firstDay = allDates[0] ?? startDate
+        const skipped: ItemPlanEntry['skipped'] =
+          dueISO < notBefore ? 'exam-passed' : dayBefore < firstDay ? 'no-day-left' : undefined
+        const lastDate = dayBefore > endDate ? endDate : dayBefore
+        return { item, subject, estimated, effortMinutes, neededMinutes, dueISO, overdue: false, lastDate, skipped }
+      }
+
       const overdue = dueISO !== null && dueISO < startDate
       let lastDate = endDate
       if (dueISO && !overdue) {
@@ -985,7 +1249,17 @@ export function planItems(
         lastDate = dayBefore >= (allDates[0] ?? startDate) ? dayBefore : dueISO
         if (lastDate > endDate) lastDate = endDate
       }
-      return { item, subject, estimated, effortMinutes, neededMinutes, dueISO, overdue, lastDate }
+      return {
+        item,
+        subject,
+        estimated,
+        effortMinutes,
+        neededMinutes,
+        dueISO,
+        overdue,
+        lastDate,
+        skipped: undefined as ItemPlanEntry['skipped'],
+      }
     })
     .filter((x): x is NonNullable<typeof x> => x !== null)
     .sort((a, b) => {
@@ -1000,12 +1274,36 @@ export function planItems(
   const overGoal = new Set<string>()
 
   for (const p of prepared) {
+    if (p.skipped) {
+      result.entries.push({
+        item: p.item,
+        subject: p.subject,
+        effortMinutes: p.effortMinutes,
+        estimated: p.estimated,
+        neededMinutes: p.neededMinutes,
+        plannedMinutes: 0,
+        unplacedMinutes: 0,
+        sessions: 0,
+        lastDate: p.lastDate,
+        overdue: false,
+        skipped: p.skipped,
+      })
+      result.warnings.push(
+        p.skipped === 'exam-passed'
+          ? `${p.item.title} was ${formatISOShort(p.dueISO!)}, so no revision was planned. Tick it off to clear it.`
+          : `${p.item.title} is ${p.dueISO === notBefore ? 'today' : formatISOShort(p.dueISO!)}, so there is no day left to revise before it.`,
+      )
+      continue
+    }
+
     const sessions = splitSessions(p.neededMinutes, prefs.blockDuration)
     // Study days first; if the deadline leaves none, any day in the window.
     let eligible = studyDates.filter((d) => d <= p.lastDate)
     if (eligible.length === 0 && sessions.length > 0) eligible = allDates.filter((d) => d <= p.lastDate)
     const m = eligible.length
-    const perDayCap = Math.max(prefs.maxBlocksPerSubjectPerDay, Math.ceil(sessions.length / Math.max(1, m)))
+    const perDayCap = p.item.flexible
+      ? prefs.maxBlocksPerSubjectPerDay
+      : Math.max(prefs.maxBlocksPerSubjectPerDay, Math.ceil(sessions.length / Math.max(1, m)))
 
     const placedHere: PlannedBlock[] = []
     let unplacedMinutes = 0
@@ -1016,7 +1314,7 @@ export function planItems(
 
       // Pass 1 respects the daily goal and the per-day cap. Pass 2 exists for
       // deadlines: it ignores both and only needs a free slot in the window.
-      for (const strict of [true, false]) {
+      for (const strict of p.item.flexible ? [true] : [true, false]) {
         let best: { day: DayState; start: number; cost: number } | null = null
 
         eligible.forEach((date, index) => {
@@ -1060,6 +1358,7 @@ export function planItems(
             sessions: 0,
             overGoal: !strict,
             title: p.item.title,
+            reason: '',
           })
           return
         }
@@ -1076,6 +1375,8 @@ export function planItems(
         placedHere.length > 1
           ? `${p.item.title} · ${ITEM_LABELS[p.item.type].session} ${i + 1}/${placedHere.length}`
           : p.item.title
+      // After numbering, because the reason can say "2 of 4" or "last".
+      block.reason = explainItemSession(p.item.type, p.dueISO, p.overdue, block, p.lastDate)
     })
     result.blocks.push(...placedHere)
 
@@ -1096,7 +1397,9 @@ export function planItems(
     if (p.overdue) {
       result.warnings.push(`${p.item.title} was due ${formatISOShort(p.dueISO!)}. It is planned as soon as possible.`)
     }
-    if (unplacedMinutes > 0) {
+    // A shortfall against a suggestion is not a problem to report; the study
+    // pass says when an exam is close and still light on time.
+    if (unplacedMinutes > 0 && !p.item.flexible) {
       const by = p.dueISO && !p.overdue ? ` before ${formatISOShort(p.dueISO)}` : ''
       result.warnings.push(
         `${p.item.title}: ${formatMinutes(unplacedMinutes)} could not fit${by}. Add study days, widen the hours or plan further ahead.`,
@@ -1113,6 +1416,39 @@ export function planItems(
     )
   }
   return result
+}
+
+/**
+ * One sentence on why an item session sits where it does. Mirrors the rules
+ * `planItems` used to place it: spaced revision for exams, early starts for
+ * assignments and projects, as-soon-as-possible for tasks and late work.
+ */
+function explainItemSession(
+  type: ItemKind,
+  dueISO: string | null,
+  overdue: boolean,
+  block: PlannedBlock,
+  lastDate: string,
+): string {
+  const due = dueISO ? formatISOShort(dueISO) : null
+  const { session: k, sessions: n } = block
+
+  if (block.overGoal) return `Past your daily goal, so it is ready by ${due ?? 'the deadline'}.`
+  if (overdue) return `Overdue since ${due}, so it goes first.`
+
+  if (type === 'EXAM') {
+    if (k === n && block.date === lastDate) return 'Final revision, the day before the exam.'
+    return n > 1
+      ? `Revision ${k} of ${n}, spaced out before the exam on ${due}.`
+      : `Revision before the exam on ${due}.`
+  }
+
+  if (!due) return type === 'TASK' ? 'Quick task, fitted in early.' : 'No deadline, so it fills free time.'
+  if (type === 'TASK') return `Due ${due}, so it is done early and off your list.`
+  if (n <= 1) return `Started early so ${due} has room to spare.`
+  if (k === 1) return `Session 1 of ${n}, started early so ${due} has room to spare.`
+  if (k === n) return `Last session, finishing ahead of ${due}.`
+  return `Session ${k} of ${n}, spread out before ${due}.`
 }
 
 const SHORT_DAY = new Intl.DateTimeFormat('en-GB', { weekday: 'short', day: 'numeric', month: 'short' })
@@ -1140,6 +1476,75 @@ export interface CombinedPlan {
   warnings: string[]
 }
 
+const REVISION_PREFIX = 'exam-revision:'
+
+/**
+ * Revision for each subject's own exam date, as items the item planner can
+ * schedule by deadline. Only exams close enough to plan for in this range: one
+ * further out is left to the study pass, whose exam-pressure factor ramps up
+ * over the final fortnight, rather than packing weeks of revision into now.
+ *
+ * Skipped when an exam item already sits on that day, which would otherwise
+ * revise for the same paper twice. Revision already on the calendar from an
+ * earlier run counts towards the effort, so generating again tops it up.
+ */
+function subjectExamRevision(
+  items: SchedulingItem[],
+  subjects: SchedulingSubject[],
+  existingEvents: ExistingEvent[],
+  startDate: string,
+  endDate: string,
+  today: string,
+): SchedulingItem[] {
+  const examItemDays = new Set(
+    items.filter((i) => i.type === 'EXAM' && i.dueDate).map((i) => `${i.subjectId}|${toISODate(i.dueDate!)}`),
+  )
+  const horizon = addDaysISO(endDate, 1)
+
+  return subjects
+    .filter((s) => {
+      if (!s.examDate) return false
+      const exam = toISODate(s.examDate)
+      return exam >= startDate && exam <= horizon && !examItemDays.has(`${s.id}|${exam}`)
+    })
+    .map((s) => {
+      const examStart = parseISODate(toISODate(s.examDate!))
+      const booked = existingEvents
+        .filter(
+          (e) =>
+            e.subjectId === s.id &&
+            e.isGenerated &&
+            !e.itemId &&
+            e.status !== 'CANCELLED' &&
+            !e.isAllDay &&
+            toISODate(e.startsAt) >= today &&
+            e.startsAt < examStart,
+        )
+        .reduce((sum, e) => sum + (e.endsAt.getTime() - e.startsAt.getTime()) / 60_000, 0)
+      return {
+        id: `${REVISION_PREFIX}${s.id}`,
+        subjectId: s.id,
+        title: `${s.name} exam`,
+        type: 'EXAM' as const,
+        dueDate: s.examDate,
+        estimatedMinutes: null,
+        priority: 2,
+        bookedMinutes: booked,
+        flexible: true,
+      }
+    })
+}
+
+/** Exam dates per subject from a list of items, local YYYY-MM-DD. */
+export function examsFromItems(items: Pick<SchedulingItem, 'subjectId' | 'type' | 'dueDate'>[]): Map<string, string[]> {
+  const out = new Map<string, string[]>()
+  for (const item of items) {
+    if (item.type !== 'EXAM' || !item.dueDate) continue
+    out.set(item.subjectId, [...(out.get(item.subjectId) ?? []), toISODate(item.dueDate)])
+  }
+  return out
+}
+
 /**
  * Items first, because they carry deadlines; general study time second, into
  * whatever daily goal remains. The item blocks are handed to the study planner
@@ -1155,7 +1560,45 @@ export function planCombined(
   prefs: SchedulingPrefs,
   options: PlanOptions & { fillStudyTime?: boolean; studySubjects?: SchedulingSubject[] } = {},
 ): CombinedPlan {
-  const itemPlan = planItems(items, subjects, existingEvents, startDate, endDate, prefs, options)
+  // Exams from the items being planned, unless the caller knows more: it
+  // usually does, since it can include exams already ticked off, which still
+  // mark where a subject's study ends.
+  const examsBySubject = options.examsBySubject ?? examsFromItems(items)
+  const planOptions = { ...options, examsBySubject }
+
+  // A subject's own exam date becomes revision work, planned by deadline
+  // alongside the real items. Items used to be planned first unconditionally,
+  // so an essay due in ten days took the mornings before a hard exam in four,
+  // and the exam got whatever was left. Earliest deadline first is the order
+  // that meets the most deadlines, and an exam is a deadline.
+  const revision = subjectExamRevision(
+    items,
+    options.fillStudyTime === false ? [] : options.studySubjects ?? subjects,
+    existingEvents,
+    startDate,
+    endDate,
+    options.notBefore ?? todayISO(),
+  )
+
+  const itemPlan = planItems([...items, ...revision], subjects, existingEvents, startDate, endDate, prefs, planOptions)
+  // Revision sessions carry no item: there is no row to link them to.
+  const revisionBlocks = itemPlan.blocks.filter((b) => b.itemId?.startsWith(REVISION_PREFIX))
+  for (const block of revisionBlocks) block.itemId = null
+  itemPlan.entries = itemPlan.entries.filter((e) => !e.item.id.startsWith(REVISION_PREFIX))
+  // The study pass reports a subject whose exam has passed; the item pass
+  // would say the same thing again in different words.
+  itemPlan.warnings = itemPlan.warnings.filter(
+    (w) => !revision.some((r) => w.startsWith(`${r.title} was `) || w.startsWith(`${r.title} is `)),
+  )
+
+  // Item sessions are study too. Without these, a subject revised yesterday
+  // for its midterm would be described as not studied for days.
+  const priorSessions = new Map<string, string[]>()
+  const priorMinutes = new Map<string, number>()
+  for (const block of itemPlan.blocks) {
+    priorSessions.set(block.subjectId, [...(priorSessions.get(block.subjectId) ?? []), block.date])
+    priorMinutes.set(block.subjectId, (priorMinutes.get(block.subjectId) ?? 0) + block.duration)
+  }
 
   const asEvents: ExistingEvent[] = itemPlan.blocks.map((b, i) => ({
     id: `planned-${i}`,
@@ -1172,15 +1615,24 @@ export function planCombined(
 
   const study =
     options.fillStudyTime === false || (options.studySubjects ?? subjects).length === 0
-      ? planSchedule([], [], startDate, endDate, prefs, options)
+      ? planSchedule([], [], startDate, endDate, prefs, planOptions)
       : planSchedule(
           options.studySubjects ?? subjects,
           [...existingEvents, ...asEvents],
           startDate,
           endDate,
           prefs,
-          options,
+          { ...planOptions, priorSessions, priorMinutes },
         )
+
+  // Exam revision is study for the subject and is not listed with the items,
+  // so it belongs in the subject's row. Without this a subject revising for an
+  // exam in three days read "no spare time".
+  for (const entry of study.bySubject) {
+    const mine = revisionBlocks.filter((b) => b.subjectId === entry.subject.id)
+    entry.blocks += mine.length
+    entry.minutes += mine.reduce((sum, b) => sum + b.duration, 0)
+  }
 
   const studyBlocks: PlannedBlock[] = study.blocks.map((b) => ({
     ...b,

@@ -127,6 +127,13 @@ export default async function SchedulePage({
       ),
     }))
 
+  // Every exam date, including exams already ticked off. The planner stops a
+  // subject's study the day before its last exam, and a finished exam still
+  // marks that point; with only open items it would plan straight past it.
+  const schedulingExams = allItems
+    .filter((item) => item.type === 'EXAM' && item.dueDate && activeSubjectIds.has(item.subjectId))
+    .map((item) => ({ subjectId: item.subjectId, date: item.dueDate!.toISOString().slice(0, 10) }))
+
   const days = Array.from({ length: 7 }, (_, i) => addDays(weekStart, i))
 
   const gridDates = view === 'day' ? [selectedDay] : days
@@ -230,6 +237,7 @@ export default async function SchedulePage({
             subjects={schedulingSubjects}
             events={schedulingEvents}
             items={schedulingItems}
+            exams={schedulingExams}
             weekStartISO={weekStart.toISOString()}
           />
 
