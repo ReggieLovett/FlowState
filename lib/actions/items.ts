@@ -7,6 +7,7 @@ import { createItem, deleteItem, updateItem } from '@/lib/data/items'
 import type { ActionState } from '@/lib/actions/schedule'
 import { POLICIES } from '@/lib/rate-limit'
 import { limitUser } from '@/lib/rate-limit-user'
+import { formId, idSchema } from '@/lib/validation/fields'
 
 /**
  * Server Actions for subject items.
@@ -19,7 +20,7 @@ import { limitUser } from '@/lib/rate-limit-user'
 const ITEM_TYPES = ['TASK', 'ASSIGNMENT', 'PROJECT', 'EXAM'] as const
 
 const itemSchema = z.object({
-  subjectId: z.string().trim().min(1, 'Pick a subject.').max(64),
+  subjectId: idSchema,
   title: z.string().trim().min(1, 'Give it a title.').max(200),
   type: z.enum(ITEM_TYPES),
   // Date-only, stored at UTC midnight like Subject.examDate.
@@ -97,7 +98,7 @@ export async function updateItemAction(
   _previous: ActionState,
   formData: FormData,
 ): Promise<ActionState> {
-  const id = String(formData.get('id') ?? '')
+  const id = formId(formData.get('id'))
   if (!id) return { error: 'Missing item.' }
 
   const limited = await limitUser(POLICIES.write)
@@ -121,7 +122,7 @@ export async function setItemStatusAction(
   _previous: ActionState,
   formData: FormData,
 ): Promise<ActionState> {
-  const id = String(formData.get('id') ?? '')
+  const id = formId(formData.get('id'))
   const status = formData.get('status')
   if (!id || (status !== 'TODO' && status !== 'DONE')) return { error: 'Could not update that item.' }
 
@@ -144,7 +145,7 @@ export async function deleteItemAction(
   _previous: ActionState,
   formData: FormData,
 ): Promise<ActionState> {
-  const id = String(formData.get('id') ?? '')
+  const id = formId(formData.get('id'))
   if (!id) return { error: 'Missing item.' }
 
   const limited = await limitUser(POLICIES.write)

@@ -6,6 +6,7 @@ import { z } from 'zod'
 import { RATE_LIMITED_CODE, signIn, signOut } from '@/auth'
 import { POLICIES, clientIp, consume, limitedState, peek } from '@/lib/rate-limit'
 import type { RateLimited } from '@/lib/rate-limit-shared'
+import { emailSchema, newPasswordSchema, signInPasswordSchema } from '@/lib/validation/fields'
 
 /**
  * Auth form actions.
@@ -22,8 +23,8 @@ export interface AuthFormState {
 }
 
 const credentialsSchema = z.object({
-  email: z.email({ message: 'Enter a valid email address.' }),
-  password: z.string().min(1, 'Enter your password.'),
+  email: emailSchema,
+  password: signInPasswordSchema,
 })
 
 export async function signInAction(
@@ -65,7 +66,7 @@ export async function signInAction(
 async function signInLimitState(email: string): Promise<AuthFormState> {
   const [byIp, byAccount] = await Promise.all([
     peek(POLICIES.signInIp, await clientIp()),
-    peek(POLICIES.signInAccount, email.toLowerCase()),
+    peek(POLICIES.signInAccount, email),
   ])
   const blocking = [
     // The IP counter was consumed by the refused attempt, so it is over the
@@ -85,13 +86,8 @@ async function signInLimitState(email: string): Promise<AuthFormState> {
 
 const registerSchema = z.object({
   name: z.string().trim().min(1, 'Enter your name.').max(100),
-  email: z.email({ message: 'Enter a valid email address.' }),
-  password: z
-    .string()
-    // Length is the property that matters. Composition rules push people toward
-    // predictable substitutions, so a floor of 12 is used instead.
-    .min(12, 'Use at least 12 characters.')
-    .max(200),
+  email: emailSchema,
+  password: newPasswordSchema,
 })
 
 export async function registerAction(

@@ -1,5 +1,6 @@
 import type { Metadata, Viewport } from 'next'
 import { Inter, Press_Start_2P } from 'next/font/google'
+import { headers } from 'next/headers'
 import { BootstrapClient } from '@/components/bootstrap/BootstrapClient'
 import { ThemeScript } from '@/components/bootstrap/ThemeScript'
 
@@ -41,7 +42,13 @@ export const viewport: Viewport = {
   ],
 }
 
-export default function RootLayout({ children }: { children: React.ReactNode }) {
+export default async function RootLayout({ children }: { children: React.ReactNode }) {
+  // Set by proxy.ts alongside the Content-Security-Policy. Reading it makes
+  // every page dynamic, which a per-request nonce requires anyway: a page
+  // rendered at build time has no request, so no nonce, and its scripts would
+  // be refused.
+  const nonce = (await headers()).get('x-nonce') ?? undefined
+
   return (
     // The font variables go on <html>, not <body>. theme.css reads them inside
     // :root, and a custom property that references a variable :root cannot see
@@ -49,7 +56,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
     // default serif.
     <html lang="en" className={`${inter.variable} ${pixel.variable}`} suppressHydrationWarning>
       <head>
-        <ThemeScript />
+        <ThemeScript nonce={nonce} />
       </head>
       <body>
         <a href="#main" className="visually-hidden-focusable btn btn-primary m-2">

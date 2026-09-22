@@ -1,28 +1,36 @@
 import { NextResponse } from 'next/server'
-import bcrypt from 'bcryptjs'
 import { z } from 'zod'
-import { Prisma } from '@prisma/client'
-import { prisma } from '@/lib/prisma'
+import { createAccount } from '@/lib/data/accounts'
+import { rejectCrossOrigin, rejectNonJson } from '@/lib/http/request-guards'
 import { POLICIES, consume, ipFromHeaders, rateLimitHeaders, tooManyRequests } from '@/lib/rate-limit'
+import { emailSchema, newPasswordSchema } from '@/lib/validation/fields'
 
 /**
- * Credentials sign-up.
+ * Credentials sign-up over JSON.
  *
  * OAuth and credentials sign-ups create only the account. Subjects are created
  * by the user after sign-in.
+ *
+ * Account creation itself lives in lib/data/accounts.ts, shared with the sign-up
+ * form. This route used to hash and insert on its own, which is how the two
+ * paths came to disagree about what a valid password is.
  */
 
 export const runtime = 'nodejs'
 
 const registerSchema = z.object({
   name: z.string().trim().min(1).max(100),
-  email: z.email().toLowerCase(),
-  // Length is the property that actually matters. Composition rules push people
-  // toward predictable substitutions, so a floor of 12 is used instead.
-  password: z.string().min(12).max(200),
+  email: emailSchema,
+  password: newPasswordSchema,
 })
 
 export async function POST(request: Request) {
+  // Cheapest checks first. Neither touches the database.
+  const crossOrigin = rejectCrossOrigin(request)
+  if (crossOrigin) return crossOrigin
+  const notJson = rejectNonJson(request)
+  if (notJson) return notJson
+
   // Before parsing: a malformed body still costs a request, so a client cannot
   // probe the endpoint for free by sending junk.
   const limit = await consume(POLICIES.register, ipFromHeaders(request.headers))
@@ -43,32 +51,16 @@ export async function POST(request: Request) {
     )
   }
 
-  const { name, email, password } = parsed.data
-  const passwordHash = await bcrypt.hash(password, 12)
+  const result = await createAccount(parsed.data)
 
-  try {
-    const user = await prisma.user.create({
-      data: { name, email, passwordHash },
-      select: { id: true, email: true, name: true },
-    })
-
-    return NextResponse.json({ user }, { status: 201, headers: rateLimitHeaders(limit) })
-  } catch (error) {
-    // P2002 is the unique violation on User.email. Answering "created" for an
-    // address that already exists would be a lie the client acts on, so this
-    // returns 409. That does disclose that the address is registered, which is
-    // the accepted trade-off for a usable sign-up form; the sign-in endpoint is
-    // where enumeration is actually prevented (see the dummy-hash comparison in
-    // auth.ts).
-    if (
-      error instanceof Prisma.PrismaClientKnownRequestError &&
-      error.code === 'P2002'
-    ) {
-      return NextResponse.json(
-        { error: 'An account with that email already exists.' },
-        { status: 409 },
-      )
-    }
-    throw error
+  // Answering "created" for an address that already exists would be a lie the
+  // client acts on, so this returns 409. That does disclose that the address is
+  // registered, the accepted trade-off for a usable sign-up form, bounded by the
+  // per-IP limit above. The sign-in endpoint is where enumeration is actually
+  // prevented (see the dummy-hash comparison in auth.ts).
+  if (!result.ok) {
+    return NextResponse.json({ error: result.error }, { status: 409 })
   }
+
+  return NextResponse.json({ user: result.user }, { status: 201, headers: rateLimitHeaders(limit) })
 }

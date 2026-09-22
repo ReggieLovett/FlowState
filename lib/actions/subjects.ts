@@ -1,6 +1,8 @@
 'use server'
 
 import { revalidatePath } from 'next/cache'
+import { unstable_rethrow } from 'next/navigation'
+import { Prisma } from '@prisma/client'
 import { z } from 'zod'
 import {
   createSubject,
@@ -14,6 +16,7 @@ import type { ActionState } from '@/lib/actions/schedule'
 import { POLICIES } from '@/lib/rate-limit'
 import { limitUser } from '@/lib/rate-limit-user'
 import type { Category } from '@prisma/client'
+import { dateInputSchema, formId } from '@/lib/validation/fields'
 
 /**
  * Server Actions for subjects.
@@ -33,8 +36,20 @@ const subjectSchema = z.object({
     .optional(),
   notes: z.string().trim().max(2000).optional(),
   difficulty: z.coerce.number().int().min(1).max(10).optional(),
-  examDate: z.string().optional(),
+  // Was an unchecked string handed to `new Date()`. Garbage became Invalid Date,
+  // Prisma threw, and the catch below reported it as a duplicate name.
+  examDate: z.union([z.literal(''), dateInputSchema]).optional(),
 })
+
+/** Unique violation on (userId, name): the only expected write failure here. */
+function isDuplicateName(error: unknown): boolean {
+  return error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2002'
+}
+
+/** Date-only, stored at UTC midnight like SubjectItem.dueDate. */
+function toExamDate(value: string | undefined): Date | null {
+  return value ? new Date(`${value}T00:00:00.000Z`) : null
+}
 
 function parseForm(formData: FormData) {
   return subjectSchema.safeParse({
@@ -68,12 +83,16 @@ export async function createSubjectAction(
       colorHex: parsed.data.colorHex,
       notes: parsed.data.notes || null,
       difficulty: parsed.data.difficulty,
-      examDate: parsed.data.examDate ? new Date(parsed.data.examDate) : null,
+      examDate: toExamDate(parsed.data.examDate),
     })
-  } catch {
-    // @@unique([userId, name]) is per-user, so this only ever means the caller
-    // already has a subject with this name.
-    return { error: 'You already have a subject with that name.' }
+  } catch (error) {
+    // A bare `catch {}` here used to swallow the redirect thrown when the
+    // session has expired, telling a signed-out user their name was taken.
+    unstable_rethrow(error)
+    // @@unique([userId, name]) is per-user, so a P2002 only ever means the
+    // caller already has a subject with this name.
+    if (isDuplicateName(error)) return { error: 'You already have a subject with that name.' }
+    throw error
   }
 
   revalidatePath('/dashboard/subjects')
@@ -84,7 +103,7 @@ export async function updateSubjectAction(
   _previous: ActionState,
   formData: FormData,
 ): Promise<ActionState> {
-  const id = String(formData.get('id') ?? '')
+  const id = formId(formData.get('id'))
   if (!id) return { error: 'Missing subject.' }
 
   const limited = await limitUser(POLICIES.write)
@@ -103,10 +122,16 @@ export async function updateSubjectAction(
       colorHex: parsed.data.colorHex,
       notes: parsed.data.notes || null,
       difficulty: parsed.data.difficulty,
-      examDate: parsed.data.examDate ? new Date(parsed.data.examDate) : undefined,
+      // Absent leaves the date alone; an emptied field clears it. The old code
+      // could never clear a date once set. Keeping "absent" distinct means a
+      // form that omits the field cannot wipe it by accident.
+      examDate: parsed.data.examDate === undefined ? undefined : toExamDate(parsed.data.examDate),
     })
-  } catch {
-    return { error: 'Could not save that subject. The name may already be taken.' }
+  } catch (error) {
+    unstable_rethrow(error)
+    if (isDuplicateName(error)) return { error: 'You already have a subject with that name.' }
+    // Someone else's id, or a subject deleted in another tab.
+    return { error: 'That subject is no longer available.' }
   }
 
   revalidatePath('/dashboard/subjects')
@@ -118,7 +143,7 @@ export async function deleteSubjectAction(
   _previous: ActionState,
   formData: FormData,
 ): Promise<ActionState> {
-  const id = String(formData.get('id') ?? '')
+  const id = formId(formData.get('id'))
   if (!id) return { error: 'Missing subject.' }
 
   const limited = await limitUser(POLICIES.write)
@@ -135,7 +160,7 @@ export async function toggleSubjectArchivedAction(
   _previous: ActionState,
   formData: FormData,
 ): Promise<ActionState> {
-  const id = String(formData.get('id') ?? '')
+  const id = formId(formData.get('id'))
   const archived = formData.get('archived') === 'true'
   if (!id) return { error: 'Missing subject.' }
 
@@ -144,7 +169,8 @@ export async function toggleSubjectArchivedAction(
 
   try {
     await setSubjectArchived(id, archived)
-  } catch {
+  } catch (error) {
+    unstable_rethrow(error)
     return { error: 'That subject is no longer available.' }
   }
 

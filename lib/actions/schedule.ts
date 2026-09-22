@@ -11,6 +11,7 @@ import { POLICIES } from '@/lib/rate-limit'
 import { limitUser } from '@/lib/rate-limit-user'
 import type { RateLimited } from '@/lib/rate-limit-shared'
 import type { Category } from '@prisma/client'
+import { dateInputSchema, formId, idSchema, timeInputSchema } from '@/lib/validation/fields'
 
 /**
  * Server Actions for schedule events.
@@ -34,15 +35,24 @@ const eventSchema = z
   .object({
     title: z.string().trim().min(1, 'Give the event a title.').max(200),
     category: categoryEnum,
-    subjectId: z.string().trim().optional(),
-    date: z.string().min(1, 'Pick a date.'),
-    startTime: z.string().min(1, 'Pick a start time.'),
-    endTime: z.string().min(1, 'Pick an end time.'),
+    // Empty string is the "No subject" option in the picker.
+    subjectId: z.union([z.literal(''), idSchema]).optional(),
+    // Checked for shape, not just presence. `combine()` below builds a Date
+    // from these strings, and anything malformed used to become Invalid Date and
+    // surface as a 500 from Prisma rather than as a message on the form.
+    date: dateInputSchema,
+    // All-day events post no times, because the inputs are disabled.
+    startTime: z.union([z.literal(''), timeInputSchema]).optional(),
+    endTime: z.union([z.literal(''), timeInputSchema]).optional(),
     location: z.string().trim().max(200).optional(),
     notes: z.string().trim().max(2000).optional(),
     isAllDay: z.boolean().optional(),
   })
-  .refine((v) => v.isAllDay || v.endTime > v.startTime, {
+  .refine((v) => v.isAllDay || (v.startTime && v.endTime), {
+    message: 'Pick a start and an end time.',
+    path: ['startTime'],
+  })
+  .refine((v) => v.isAllDay || (v.endTime ?? '') > (v.startTime ?? ''), {
     message: 'End time must be after the start time.',
     path: ['endTime'],
   })
@@ -58,8 +68,12 @@ function parseForm(formData: FormData) {
     category: formData.get('category'),
     subjectId: formData.get('subjectId') ?? undefined,
     date: formData.get('date'),
-    startTime: formData.get('startTime'),
-    endTime: formData.get('endTime'),
+    // Disabled inputs are not submitted, so an all-day event arrives with no
+    // times at all: null, which `.optional()` does not accept. Mapped to
+    // undefined here. The old `z.string().min(1)` rejected that null, so an
+    // all-day event (the way deadlines are entered) could not be saved.
+    startTime: formData.get('startTime') ?? undefined,
+    endTime: formData.get('endTime') ?? undefined,
     location: formData.get('location') ?? undefined,
     notes: formData.get('notes') ?? undefined,
     isAllDay: formData.get('isAllDay') === 'on',
@@ -85,8 +99,8 @@ export async function createEventAction(
       title: v.title,
       category: v.category,
       subjectId: v.subjectId ? v.subjectId : null,
-      startsAt: v.isAllDay ? combine(v.date, '00:00') : combine(v.date, v.startTime),
-      endsAt: v.isAllDay ? combine(v.date, '23:59') : combine(v.date, v.endTime),
+      startsAt: combine(v.date, v.isAllDay ? '00:00' : v.startTime!),
+      endsAt: combine(v.date, v.isAllDay ? '23:59' : v.endTime!),
       isAllDay: v.isAllDay ?? false,
       location: v.location || null,
       notes: v.notes || null,
@@ -107,7 +121,7 @@ export async function updateEventAction(
   _previous: ActionState,
   formData: FormData,
 ): Promise<ActionState> {
-  const id = String(formData.get('id') ?? '')
+  const id = formId(formData.get('id'))
   if (!id) return { error: 'Missing event.' }
 
   const limited = await limitUser(POLICIES.write)
@@ -125,8 +139,8 @@ export async function updateEventAction(
       title: v.title,
       category: v.category,
       subjectId: v.subjectId ? v.subjectId : null,
-      startsAt: v.isAllDay ? combine(v.date, '00:00') : combine(v.date, v.startTime),
-      endsAt: v.isAllDay ? combine(v.date, '23:59') : combine(v.date, v.endTime),
+      startsAt: combine(v.date, v.isAllDay ? '00:00' : v.startTime!),
+      endsAt: combine(v.date, v.isAllDay ? '23:59' : v.endTime!),
       isAllDay: v.isAllDay ?? false,
       location: v.location || null,
       notes: v.notes || null,
@@ -149,7 +163,7 @@ export async function deleteEventAction(
   _previous: ActionState,
   formData: FormData,
 ): Promise<ActionState> {
-  const id = String(formData.get('id') ?? '')
+  const id = formId(formData.get('id'))
   if (!id) return { error: 'Missing event.' }
 
   const limited = await limitUser(POLICIES.write)
@@ -168,14 +182,21 @@ export async function setEventStatusAction(
   _previous: ActionState,
   formData: FormData,
 ): Promise<ActionState> {
-  const id = String(formData.get('id') ?? '')
+  const id = formId(formData.get('id'))
   const parsed = statusSchema.safeParse(formData.get('status'))
   if (!id || !parsed.success) return { error: 'Could not update that event.' }
 
   const limited = await limitUser(POLICIES.write)
   if (limited) return limited
 
-  await updateEvent(id, { status: parsed.data })
+  try {
+    await updateEvent(id, { status: parsed.data })
+  } catch (error) {
+    // Someone else's id matches nothing and Prisma throws. That used to escape
+    // as an unhandled 500; it is the same answer as a deleted event.
+    unstable_rethrow(error)
+    return { error: 'That event is no longer available.' }
+  }
 
   revalidatePath('/dashboard')
   revalidatePath('/dashboard/schedule')
@@ -208,7 +229,7 @@ export async function toggleCompleteAction(
   _previous: CompleteState,
   formData: FormData,
 ): Promise<CompleteState> {
-  const id = String(formData.get('id') ?? '')
+  const id = formId(formData.get('id'))
   const parsed = z.enum(['SCHEDULED', 'COMPLETED']).safeParse(formData.get('status'))
   if (!id || !parsed.success) return { error: 'Could not update that event.' }
 
@@ -245,7 +266,7 @@ export async function toggleCompleteAction(
 
 const moveSchema = z
   .object({
-    id: z.string().min(1).max(64),
+    id: idSchema,
     startsAt: z.iso.datetime(),
     endsAt: z.iso.datetime(),
   })

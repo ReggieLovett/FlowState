@@ -1,6 +1,8 @@
 import { NextResponse } from 'next/server'
 import { z } from 'zod'
 import { getUserId } from '@/lib/auth-guard'
+import { rejectCrossOrigin, rejectNonJson } from '@/lib/http/request-guards'
+import { idSchema } from '@/lib/validation/fields'
 import { createEvent, listEventsInRange } from '@/lib/data/schedule'
 import { POLICIES, rateLimitHeaders, tooManyRequests } from '@/lib/rate-limit'
 import { consumeForUser } from '@/lib/rate-limit-user'
@@ -87,7 +89,7 @@ const createSchema = z
     ]),
     startsAt: z.coerce.date(),
     endsAt: z.coerce.date(),
-    subjectId: z.string().cuid().nullish(),
+    subjectId: idSchema.nullish(),
     isAllDay: z.boolean().optional(),
     location: z.string().trim().max(200).nullish(),
     notes: z.string().trim().max(2000).nullish(),
@@ -101,6 +103,13 @@ const createSchema = z
   })
 
 export async function POST(request: Request) {
+  // Before authentication: a forged cross-site request should learn nothing,
+  // not even whether the victim's session is valid.
+  const crossOrigin = rejectCrossOrigin(request)
+  if (crossOrigin) return crossOrigin
+  const notJson = rejectNonJson(request)
+  if (notJson) return notJson
+
   const userId = await getUserId()
   if (!userId) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })

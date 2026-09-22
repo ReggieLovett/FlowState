@@ -294,3 +294,106 @@ anyone else's.
 
 Point it at a scratch database. It deletes its own fixtures, but it is a
 destructive script by nature.
+
+---
+
+## 10. Security hardening
+
+Layered so that no single mistake exposes data. Each layer below was verified
+against a live Postgres; the notes say what each one assumes, because that is
+what a later change is most likely to break.
+
+### SQL injection
+
+Every query goes through Prisma, which sends values as bound parameters. The four
+raw queries in `lib/rate-limit.ts` use the tagged-template form
+(`` prisma.$queryRaw`... ${value}` ``), which is parameterised the same way.
+Tested with `' OR '1'='1`, `'; DROP TABLE "User"; --`, `UNION SELECT` and others
+through sign-in, sign-up, event fields, route params and query strings: no
+unauthorised sign-in, no table touched, every payload stored and read back as
+literal text.
+
+`eslint.config.mjs` makes this permanent. The only three Prisma APIs that splice
+a string into SQL, `$queryRawUnsafe`, `$executeRawUnsafe` and `Prisma.raw`, are
+lint errors. If raw SQL is ever needed, use a tagged template or `Prisma.sql` /
+`Prisma.join`, which stay parameterised.
+
+### Tenant isolation in the database
+
+`SubjectItem` references `Subject` through a compound `(subjectId, userId)`
+foreign key, so Postgres refuses a cross-user link. `ScheduleEvent` cannot: its
+subject and item relations are `ON DELETE SET NULL`, and a compound key would null
+`userId` too. Migration `20260922000000_enforce_event_tenant_integrity` adds a
+trigger that rejects an event pointing at another user's subject or item.
+
+It checks only a column being _set_. Deleting a subject cascades through several
+foreign-key actions in an order Postgres does not promise, and a trigger that
+re-validated every update could run midway and abort a legitimate delete. Prisma
+ignores triggers when diffing, so this causes no migration drift.
+
+### CSRF
+
+Server Actions are protected by Next.js itself: POST-only, and the `Origin` must
+match the host. Route Handlers get nothing, so `lib/http/request-guards.ts` adds
+the same `Origin` check (falling back to `Sec-Fetch-Site`) and requires
+`Content-Type: application/json`, which a cross-site form cannot send. Applied to
+every state-changing route. A request with neither header is a non-browser client
+holding no ambient cookies, so it is allowed.
+
+### Content Security Policy
+
+Set per request in `proxy.ts` with a fresh nonce and `'strict-dynamic'`; see
+`lib/http/csp.ts`. Next.js stamps the nonce onto its own scripts. The one inline
+script this app writes, `ThemeScript`, receives it from the root layout.
+
+- **Adding an inline `<script>`**: pass it the nonce from `headers().get('x-nonce')`,
+  or it will be refused.
+- **Styles allow `'unsafe-inline'`** because the UI uses `style={{...}}` attributes,
+  which a nonce cannot authorise. Moving those to classes would allow tightening it.
+- **Every page is dynamic.** A nonce needs a request, so pages cannot be prerendered.
+- `/api/auth/*` is outside the proxy and has no CSP. Its only HTML is Auth.js's
+  fixed sign-out page, which has no user content and still gets
+  `X-Frame-Options: DENY`.
+
+**The proxy has a trap.** Passing a handler to `auth()`, as `proxy.ts` does,
+makes Auth.js skip its own sign-in redirect and run the handler for signed-out
+visitors. So `authorized` in `auth.config.ts` returns an explicit redirect
+`Response`, never a bare `false`. With `false`, the proxy stops protecting
+`/dashboard`; the layout's own session check would still redirect, but one of the
+two layers would be gone without any visible sign.
+
+Static headers in `next.config.js`: HSTS (production, no `preload`),
+`X-Frame-Options: DENY`, `Cross-Origin-Opener-Policy`, `Permissions-Policy`,
+`nosniff`, `Referrer-Policy`. `X-Powered-By` is disabled.
+
+### Passwords
+
+bcrypt reads only the first 72 bytes and ignores the rest, so a longer password
+was only partly checked. `lib/validation/fields.ts` caps new passwords at 72
+**bytes** (not characters: 19 emoji are 76 bytes). Sign-in is not capped at 72,
+so an account created before the rule can still sign in. All four entry points
+share these schemas.
+
+### Input validation
+
+Shared schemas in `lib/validation/fields.ts`. Ids are bounded and pattern-checked
+everywhere they arrive. Date and time fields are checked for shape, where they
+had become Invalid Date and surfaced as 500s.
+
+### Dependencies
+
+`npm audit` reports four high-severity advisories, all in `mysql2` and
+`deepmerge-ts`, pulled in only by the Prisma **CLI**. `mysql2` is never loaded
+(this is a Postgres app) and `deepmerge-ts` only merges `prisma.config.ts`. The
+CLI is a devDependency, and none of the three packages appears in any of the
+deployed function bundles (`.next/server/**/*.nft.json`). `npm audit fix --force`
+would downgrade Prisma to 6 and break the app; wait for Prisma to update instead.
+
+### Accepted trade-offs
+
+- **Sign-up reveals whether an email is registered** (409), bounded by the per-IP
+  sign-up limit. Sign-in does not leak it: a dummy bcrypt hash keeps timing equal.
+- **Rate limits fail open** if their query errors, so a limiter outage is not an
+  app outage. The protected routes need the same database anyway.
+- **Rate-limit IP detection trusts Vercel's headers.** Behind a proxy that passes
+  a client's `X-Forwarded-For` through unchanged, IP-keyed limits could be evaded.

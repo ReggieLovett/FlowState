@@ -12,6 +12,7 @@ import { CATEGORY_META } from '@/lib/categories'
 import { POLICIES } from '@/lib/rate-limit'
 import { limitUser } from '@/lib/rate-limit-user'
 import type { RateLimited } from '@/lib/rate-limit-shared'
+import { idSchema } from '@/lib/validation/fields'
 
 /**
  * Server Actions for the smart scheduling engine.
@@ -29,8 +30,8 @@ import type { RateLimited } from '@/lib/rate-limit-shared'
 const CATEGORIES = Object.keys(CATEGORY_META) as [Category, ...Category[]]
 
 const blockSchema = z.object({
-  subjectId: z.string().min(1).max(64),
-  itemId: z.string().min(1).max(64).nullish(),
+  subjectId: idSchema,
+  itemId: idSchema.nullish(),
   title: z.string().min(1).max(200),
   category: z.enum(CATEGORIES),
   startsAt: z.iso.datetime(),

@@ -8,6 +8,7 @@ import { z } from 'zod'
 import { authConfig } from '@/auth.config'
 import { prisma } from '@/lib/prisma'
 import { POLICIES, consume, ipFromHeaders, peek, resetLimit } from '@/lib/rate-limit'
+import { emailSchema, signInPasswordSchema } from '@/lib/validation/fields'
 
 /**
  * Full Auth.js configuration. Node runtime only: it touches Prisma and bcrypt.
@@ -18,9 +19,11 @@ import { POLICIES, consume, ipFromHeaders, peek, resetLimit } from '@/lib/rate-l
  * verification tokens are persisted; only the session itself lives in a cookie.
  */
 
+// The same rules as the sign-in form. The Auth.js callback endpoint is public,
+// so it cannot rely on the form having validated anything.
 const credentialsSchema = z.object({
-  email: z.string().email(),
-  password: z.string().min(8),
+  email: emailSchema,
+  password: signInPasswordSchema,
 })
 
 /**
@@ -67,8 +70,7 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
         const parsed = credentialsSchema.safeParse(rawCredentials)
         if (!parsed.success) return null
 
-        const { email, password } = parsed.data
-        const account = email.toLowerCase()
+        const { email: account, password } = parsed.data
 
         // Every attempt from this IP counts, before any bcrypt work is spent.
         const byIp = await consume(POLICIES.signInIp, ipFromHeaders(request.headers))
