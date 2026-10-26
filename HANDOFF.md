@@ -54,6 +54,7 @@ The original Google Fonts setup is retained to preserve appearance. A clean buil
 - `app/api/assistant/proposals/[id]/route.ts`: explicit Confirm/Cancel endpoint.
 - `lib/assistant/contracts.ts`: browser-safe request response types.
 - `lib/assistant/groq.ts`: server-only strict JSON schema Groq fetch, timeout, refusal/error handling.
+- `lib/assistant/provider-errors.ts`: bounded private parsing of Groq errors, fixed safe client messages and status/category-only diagnostic logs.
 - `lib/assistant/capabilities.ts`: public assistant version/capability marker for identifying stale deployments.
 - `lib/assistant/context.ts`: bounded owner-scoped schedule/task context and recurrence/truncation detection.
 - `lib/assistant/service.ts`: proposal staging and transactional decision orchestration.
@@ -73,7 +74,7 @@ The original Google Fonts setup is retained to preserve appearance. A clean buil
 
 ## API contract
 
-`GET /api/assistant` returns public build capabilities without account data or provider secrets. The current marker is `version: "flowstate-crud-v2.1"`, with `canCreateClasses`, `canCreateWorkItems`, `canCreateEvents` and `requiresConfirmation` all true. The same version is returned in `X-FlowState-Assistant-Version` on successful prompt responses. This read-only diagnostic uses `Cache-Control: no-store`.
+`GET /api/assistant` returns public build capabilities without account data or provider secrets. The current marker is `version: "flowstate-crud-v2.2"`, with `canCreateClasses`, `canCreateWorkItems`, `canCreateEvents` and `requiresConfirmation` all true. The same version is returned in `X-FlowState-Assistant-Version` on successful prompt responses. This read-only diagnostic uses `Cache-Control: no-store`.
 
 `POST /api/assistant`, same-origin JSON:
 
@@ -161,7 +162,7 @@ Completed so far:
 
 - `npm run lint`: passed.
 - `npm run typecheck`: passed.
-- `npm test`: all 72 tests passed, including HTTP/domain/persistence coverage and nine provider-adapter regression tests. Coverage includes linked class/task/event creation, all CRUD branches, rollback, stale snapshots, tenant isolation, duplicate names, cascade effects, JSONB key reordering, unavailable Calendar metadata changes, Manila all-day times, DST and mixed-plan conflicts. Provider tests cover the reported move-only refusal, empty calendars, stale history, one bounded correction, its shared timeout, and preservation of actual restrictions/refusals.
+- `npm test`: all 94 tests passed, including HTTP/domain/persistence coverage, 24 provider-adapter tests and seven provider-error tests. Coverage includes linked class/task/event creation, all CRUD branches, rollback, stale snapshots, tenant isolation, duplicate names, cascade effects, JSONB key reordering, unavailable Calendar metadata changes, Manila all-day times, DST and mixed-plan conflicts. Provider tests cover move-only refusal, empty calendars, stale history, safe format fallback, malformed/injected payload rejection, bounded correction, shared timeout, legitimate restrictions and private error classification.
 - `npx prisma validate`: passed; `prisma generate` passed. No migration applied.
 - Local HTTP checks: signed-out prompt/confirm 401, cross-origin prompt 403, text/plain body 415.
 - Browser: original floating prompt/response/confirmation layout tested with isolated mock data; cancel and interrupted-request prompt retention verified. Latest extension verified missing-time follow-up, history carryover, three linked creation previews, no mock confirm before approval, cancellation, successful confirmation with input restoration, and destructive warning/cascade count review. Temporary routes/tabs were deleted. Actual avatar-only showcase tested for normal/meta/omni selection and eye close-ups.
@@ -191,4 +192,17 @@ The user reported the Vercel assistant saying it cannot create events because th
 - Retry once only for a narrow incorrect creation denial in an empty plan, within the original 25-second total timeout. A second such denial returns an actionable 502 and retains the user's input. Provider refusals, calendar blockers, Google-write denials and ordinary clarification do not trigger correction. Both attempts still pass the existing operation/ownership/conflict validation before proposal staging.
 - Added the public version endpoint above. Local GET returned `flowstate-crud-v2.1` with creation enabled. No live Groq/Google inference or database write was performed during verification.
 
-To roll out: commit/push the updated source through the project's existing Git/Vercel workflow, deploy that revision to Production, then open `{productionOrigin}/api/assistant`. It should show `flowstate-crud-v2.1` and `canCreateEvents: true`; an older response/405 means the fix is not serving at that origin. Reload FlowState after deployment to clear previous in-memory dialogue. Do not redeploy an old revision. No extra database migration or Groq key change is required for this fix. No commit/push/deployment was performed by this agent.
+The v2.1 fix was subsequently committed by the user as `d1ae9f1` (working editor assistant). Production later returned `flowstate-crud-v2.1`, confirming that deployment reached the site.
+
+## Groq provider-rejection follow-up
+
+The next reported error was “The AI provider could not generate a plan. Try again shortly.” That exact old branch means an upstream non-2xx other than 401/403/429; it does not disclose whether the provider returned 400, 413, 422 or 5xx. The upstream status/body was not available to this session and the actual cause remains unconfirmed. Production's public endpoint returned v2.1 with creation enabled. Local Groq credentials are still absent, so verification uses mocked provider HTTP rather than live inference.
+
+- Checked [Groq structured-output documentation](https://console.groq.com/docs/structured-outputs) and [error documentation](https://console.groq.com/docs/errors). GPT-OSS 120B, strict mode, unions and the requested token limit are documented capabilities. The generated schema has no known documented violation.
+- Flattened redundant primitive unions created by constraint stripping, including nested duplicate string alternatives on relation IDs.
+- Added one JSON Object fallback only when a 400/422 explicitly identifies a response-format/schema/generation rejection. The fallback includes the exact full response schema in system instructions. No fallback occurs for unknown 400, credentials/access, model configuration, rate limits, context size, billing or provider outages.
+- Both formats pass the same closed Zod operation schemas, ownership checks, snapshot checks and timeline validation; the JSON fallback requires an explicit operations array. No mutation occurs before Confirm.
+- At most three provider requests combine one format fallback and one capability correction, all within the existing shared 25-second deadline. No unbounded retries or automatic model changes.
+- Upstream failures now produce actionable fixed messages with HTTP status/category. Logs include only model, HTTP status, known category and format; raw provider messages, failed generations, prompts and credentials are never returned or logged. Error bodies are bounded while parsing.
+
+Roll out the latest source revision through the existing Git/Vercel workflow, then check `{productionOrigin}/api/assistant` for `flowstate-crud-v2.2`. If a provider failure remains, its new HTTP/category message and the matching Vercel log (`model: openai/gpt-oss-120b`, `status`, `kind`, `format`) identify the next investigation without sharing secrets. No additional migration, API key change, production write, commit, push or deployment was performed by this agent.

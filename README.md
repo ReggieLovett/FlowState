@@ -268,8 +268,13 @@ No live database migration is run by `npm run build`.
 
 If a Vercel deployment still says it can only move existing events, deploy the
 latest source revision and reload the app. Open `/api/assistant` on that deployment
-to check: the current version is `flowstate-crud-v2.1` and `canCreateEvents` is true.
+to check: the current version is `flowstate-crud-v2.2` and `canCreateEvents` is true.
 An empty calendar supports creating its first event; no manual event is required.
+
+If Groq rejects the structured response format, the adapter retries once in JSON
+Object mode and validates the full plan on the server before staging it. Other
+provider failures identify their HTTP status and category. Vercel logs contain
+only safe status/category metadata, never prompts, tokens or generated content.
 
 See [HANDOFF.md](HANDOFF.md) for the API contract, implementation map, setup,
 verification, limits, and recovery instructions if a session or connection ends.

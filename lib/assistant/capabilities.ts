@@ -1,5 +1,5 @@
 /** Public, non-sensitive build marker for diagnosing stale deployments. */
-export const ASSISTANT_VERSION = 'flowstate-crud-v2.1'
+export const ASSISTANT_VERSION = 'flowstate-crud-v2.2'
 
 export const assistantCapabilities = {
   version: ASSISTANT_VERSION,

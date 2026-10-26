@@ -42,10 +42,14 @@ const reply = (value: ModelPlan) => Response.json({ choices: [{ finish_reason: '
 interface ProviderRequest {
   model: string
   messages: Array<{ role: string; content: string }>
-  response_format: { type: string; json_schema: { strict: boolean; schema: { required: string[]; properties: { operations: unknown } } } }
+  response_format: {
+    type: string
+    json_schema?: { strict: boolean; schema: { required: string[]; properties: { operations: unknown } } }
+  }
 }
 function provider(t: TestContext, replies: Response[]) {
   const calls: Array<{ body: ProviderRequest; signal: RequestInit['signal'] }> = []
+  t.mock.method(console, 'warn', () => {})
   t.mock.method(globalThis, 'fetch', async (url: string | URL | Request, init?: RequestInit) => {
     assert.equal(String(url), 'https://api.groq.com/openai/v1/chat/completions')
     assert.equal(init?.method, 'POST')
@@ -67,6 +71,7 @@ test('an empty calendar sends full creation capabilities and accepts a new event
   const request = calls[0].body
   assert.equal(request.model, GROQ_MODEL)
   assert.equal(request.response_format.type, 'json_schema')
+  assert.ok(request.response_format.json_schema)
   assert.equal(request.response_format.json_schema.strict, true)
   assert.ok(request.response_format.json_schema.schema.required.includes('operations'))
   assert.match(JSON.stringify(request.response_format.json_schema.schema.properties.operations), /event\.create/)
@@ -164,4 +169,137 @@ test('the correction uses the remaining timeout budget and aborts without a thir
   t.mock.timers.tick(1)
   await assert.rejects(pending, (error: unknown) => error instanceof AssistantError && error.status === 504)
   assert.equal(signals.length, 2)
+})
+
+const schemaRejection = () => Response.json({
+  error: { type: 'invalid_request_error', param: 'response_format', message: 'schema grammar unsupported' },
+}, { status: 400 })
+const rawReply = (value: unknown) => Response.json({
+  choices: [{ finish_reason: 'stop', message: { content: JSON.stringify(value) } }],
+})
+
+test('a strict schema rejection retries once with JSON object mode and the complete approval-aware schema', async (t) => {
+  const operation = event()
+  const calls = provider(t, [schemaRejection(), reply(plan('Review and Confirm to add this session.', [operation]))])
+
+  const result = await generatePlan(input())
+
+  assert.deepEqual(result.operations, [operation])
+  assert.equal(calls.length, 2)
+  assert.equal(calls[0].body.response_format.type, 'json_schema')
+  assert.equal(calls[1].body.response_format.type, 'json_object')
+  assert.equal(calls[1].body.response_format.json_schema, undefined)
+  assert.ok(calls[0].signal)
+  assert.equal(calls[1].signal, calls[0].signal)
+  const strictSchema = calls[0].body.response_format.json_schema!.schema
+  const fallbackInstructions = calls[1].body.messages.filter(message => message.role === 'system').map(message => message.content).join('\n')
+  assert.ok(fallbackInstructions.includes(JSON.stringify(strictSchema)), 'JSON mode must receive the complete output contract, including all operation variants.')
+  assert.match(fallbackInstructions, /json/i)
+  assert.match(fallbackInstructions, /only after the user clicks Confirm/i)
+  assert.match(fallbackInstructions, /never.*already.*saved/i)
+})
+
+for (const invalid of [
+  { name: 'an incomplete plan', value: () => ({ message: 'Save this session.', operations: [event()] }) },
+  { name: 'a plan without explicit operations', value: () => ({ message: 'Review this plan.', changes: [] }) },
+  { name: 'an operation with an injected owner', value: () => ({ ...plan('Review the session.'), operations: [{ ...event(), userId: 'another-user' }] }) },
+]) {
+  test(`JSON object fallback rejects ${invalid.name} without a third request`, async (t) => {
+    const calls = provider(t, [schemaRejection(), rawReply(invalid.value())])
+
+    await assert.rejects(generatePlan(input()), (error: unknown) => error instanceof AssistantError && error.status === 502 && /invalid plan/i.test(error.message))
+
+    assert.equal(calls.length, 2)
+    assert.equal(calls[1].body.response_format.type, 'json_object')
+  })
+}
+
+for (const failure of [
+  { status: 400, error: { type: 'invalid_request_error', param: 'messages', message: 'Invalid messages supplied.' } },
+  { status: 401, error: { type: 'invalid_api_key', message: 'Invalid credentials.' } },
+  { status: 403, error: { type: 'permission_error', message: 'Access is denied.' } },
+  { status: 413, error: { type: 'request_too_large', message: 'Request body is too large.' } },
+  { status: 422, error: { type: 'invalid_request_error', message: 'Unable to process input.' } },
+  { status: 429, error: { type: 'rate_limit_exceeded', message: 'Rate limit reached.' } },
+  { status: 500, error: { type: 'server_error', message: 'Internal provider failure.' } },
+  { status: 503, error: { type: 'server_error', message: 'Service unavailable.' } },
+]) {
+  test(`an unrelated provider HTTP ${failure.status} failure has an actionable status and does not retry`, async (t) => {
+    const calls = provider(t, [Response.json({ error: failure.error }, { status: failure.status })])
+
+    await assert.rejects(generatePlan(input()), (error: unknown) => {
+      assert.ok(error instanceof AssistantError)
+      assert.match(error.message, new RegExp(`HTTP ${failure.status}\\b`, 'i'))
+      return true
+    })
+
+    assert.equal(calls.length, 1)
+  })
+}
+
+test('a schema fallback and then a capability correction use at most three calls under the same signal', async (t) => {
+  const operation = event()
+  const calls = provider(t, [schemaRejection(), reply(plan(oldRefusal)), reply(plan('Review this session.', [operation]))])
+
+  assert.deepEqual((await generatePlan(input())).operations, [operation])
+
+  assert.equal(calls.length, 3)
+  assert.deepEqual(calls.map(call => call.body.response_format.type), ['json_schema', 'json_object', 'json_object'])
+  assert.ok(calls[0].signal)
+  assert.ok(calls.every(call => call.signal === calls[0].signal))
+  const finalSystem = calls[2].body.messages.filter(message => message.role === 'system').map(message => message.content).join('\n')
+  assert.match(finalSystem, /previous empty plan incorrectly denied/i)
+  assert.match(finalSystem, /only after the user clicks Confirm/i)
+})
+
+test('a capability correction and then a schema fallback use at most three calls under the same signal', async (t) => {
+  const operation = event()
+  const calls = provider(t, [reply(plan(oldRefusal)), schemaRejection(), reply(plan('Review this session.', [operation]))])
+
+  assert.deepEqual((await generatePlan(input())).operations, [operation])
+
+  assert.equal(calls.length, 3)
+  assert.deepEqual(calls.map(call => call.body.response_format.type), ['json_schema', 'json_schema', 'json_object'])
+  assert.ok(calls[0].signal)
+  assert.ok(calls.every(call => call.signal === calls[0].signal))
+  const finalSystem = calls[2].body.messages.filter(message => message.role === 'system').map(message => message.content).join('\n')
+  assert.match(finalSystem, /previous empty plan incorrectly denied/i)
+  assert.match(finalSystem, /only after the user clicks Confirm/i)
+})
+
+test('format fallback and capability correction share the original 25-second timeout rather than restarting it', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout'] })
+  t.mock.method(console, 'warn', () => {})
+  const release: Array<(response: Response) => void> = []
+  const signals: AbortSignal[] = []
+  let secondStarted!: () => void
+  let thirdStarted!: () => void
+  const second = new Promise<void>(resolve => { secondStarted = resolve })
+  const third = new Promise<void>(resolve => { thirdStarted = resolve })
+  t.mock.method(globalThis, 'fetch', (_url: string | URL | Request, init?: RequestInit): Promise<Response> => {
+    assert.ok(init?.signal)
+    signals.push(init.signal)
+    assert.ok(signals.length <= 3, 'Combined corrections must never produce a fourth provider request.')
+    if (signals.length === 2) secondStarted()
+    if (signals.length < 3) return new Promise<Response>(resolve => { release.push(resolve) })
+    thirdStarted()
+    return new Promise<Response>((_resolve, reject) => {
+      init.signal!.addEventListener('abort', () => reject(new DOMException('Aborted', 'AbortError')), { once: true })
+    })
+  })
+
+  const pending = generatePlan(input())
+  t.mock.timers.tick(10_000)
+  release[0](schemaRejection())
+  assert.equal(await Promise.race([second.then(() => 'retry'), pending.then(() => 'completed')]), 'retry')
+  t.mock.timers.tick(10_000)
+  release[1](reply(plan(oldRefusal)))
+  assert.equal(await Promise.race([third.then(() => 'retry'), pending.then(() => 'completed')]), 'retry')
+  assert.ok(signals.every(signal => signal === signals[0]))
+  t.mock.timers.tick(4_999)
+  assert.equal(signals[2].aborted, false)
+  t.mock.timers.tick(1)
+
+  await assert.rejects(pending, (error: unknown) => error instanceof AssistantError && error.status === 504)
+  assert.equal(signals.length, 3)
 })

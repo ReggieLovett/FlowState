@@ -152,7 +152,15 @@ test('Groq nested union schema closes every object and requires all declared pro
       assert.deepEqual(new Set(schema.required as string[]), new Set(Object.keys(schema.properties as object)))
     }
     assert.equal('oneOf' in schema, false)
+    if (Array.isArray(schema.anyOf)) {
+      assert.equal(new Set(schema.anyOf.map(branch => JSON.stringify(branch))).size, schema.anyOf.length)
+      assert.ok(schema.anyOf.every(branch => !('anyOf' in branch)), 'Flatten redundant nested alternatives before compiling a provider grammar.')
+    }
     Object.values(schema).forEach(walk)
   }
   walk(operationResponseSchema)
+  const variants = (operationResponseSchema as { anyOf: Array<{ properties: Record<string, { enum?: string[]; type?: unknown }> }> }).anyOf
+  const event = variants.find(variant => variant.properties.kind.enum?.includes('event.create'))!
+  assert.deepEqual(event.properties.subjectId.type, ['string', 'null'])
+  assert.deepEqual(event.properties.itemId.type, ['string', 'null'])
 })

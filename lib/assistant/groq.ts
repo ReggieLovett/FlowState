@@ -5,6 +5,7 @@ import { AssistantError } from './errors'
 import { assistantOperationSchema } from './operations'
 import { modelPlanSchema, type BusyInterval, type PlanningWindow } from './validation'
 import type { LocalContext } from './context'
+import { groqFailureError, logGroqFailure, readGroqFailure, type GroqResponseFormat } from './provider-errors'
 
 export const GROQ_MODEL = 'openai/gpt-oss-120b'
 const GROQ_TIMEOUT_MS = 25_000
@@ -25,7 +26,22 @@ function providerSchema(value: unknown): unknown {
     output.properties = Object.fromEntries(Object.entries(source.properties).map(([key, schema]) => [key, providerSchema(schema)]))
   }
   if ('items' in source) output.items = providerSchema(source.items)
-  if ('anyOf' in source || 'oneOf' in source) output.anyOf = providerSchema(source.anyOf ?? source.oneOf)
+  if ('anyOf' in source || 'oneOf' in source) {
+    // Constraint stripping makes id/ref alternatives identical strings. Flatten
+    // those primitive unions before handing the grammar to the provider.
+    const branches = providerSchema(source.anyOf ?? source.oneOf) as Array<Record<string, unknown>>
+    const flattened = branches.flatMap(branch => Array.isArray(branch.anyOf) ? branch.anyOf : [branch]) as Array<Record<string, unknown>>
+    const unique = [...new Map(flattened.map(branch => [JSON.stringify(branch), branch])).values()]
+    const primitives = unique.every(branch => Object.keys(branch).length === 1 && 'type' in branch)
+    if (primitives) {
+      const types = [...new Set(unique.flatMap(branch => Array.isArray(branch.type) ? branch.type : [branch.type]))]
+      output.type = types.length === 1 ? types[0] : types
+    } else if (unique.length === 1) {
+      Object.assign(output, unique[0])
+    } else {
+      output.anyOf = unique
+    }
+  }
   return output
 }
 
@@ -71,7 +87,9 @@ interface PlanInput {
   history?: Array<{ role: 'user' | 'assistant'; content: string }>
 }
 
-async function requestPlan(input: PlanInput, key: string, signal: AbortSignal, correctingCapabilities: boolean) {
+class GroqFormatRejected extends Error {}
+
+async function requestPlan(input: PlanInput, key: string, signal: AbortSignal, correctingCapabilities: boolean, format: GroqResponseFormat) {
   const response = await fetch('https://api.groq.com/openai/v1/chat/completions', {
     method: 'POST',
     headers: { Authorization: `Bearer ${key}`, 'Content-Type': 'application/json' },
@@ -81,7 +99,9 @@ async function requestPlan(input: PlanInput, key: string, signal: AbortSignal, c
       model: GROQ_MODEL,
       temperature: 0.35,
       max_completion_tokens: 6000,
-      response_format: { type: 'json_schema', json_schema: { name: 'flowstate_plan', strict: true, schema: responseSchema } },
+      response_format: format === 'json_schema'
+        ? { type: 'json_schema', json_schema: { name: 'flowstate_plan', strict: true, schema: responseSchema } }
+        : { type: 'json_object' },
       messages: [
         {
           role: 'system',
@@ -108,6 +128,7 @@ async function requestPlan(input: PlanInput, key: string, signal: AbortSignal, c
             'When Google is disconnected, explain that time proposals use FlowState only. Unsupported account/auth/provider settings and Google writes are unavailable. Requests outside the finite event window should get an explanation and no out-of-window event operation.',
             'Example: user says "Create a Biology class", even with no existing records. Return a proposal such as {"message":"I can create Biology. Review the class and confirm to save it.","changes":[],"operations":[{"kind":"subject.create","ref":"new:biology","name":"Biology","category":"LECTURE","code":null,"colorHex":"#4C6EF5","notes":null,"difficulty":5,"examDate":null,"reason":"Create the class you requested."}]}. For an event request with a missing time, ask for that time instead of denying creation.',
             ...(correctingCapabilities ? ['Your previous empty plan incorrectly denied FlowState creation capabilities. Reconsider the same user request using the operations schema. If essential details are supplied, propose the requested creation; otherwise ask only for missing details. Keep all approval, ownership, availability and timing restrictions.'] : []),
+            ...(format === 'json_object' ? [`Return exactly one JSON object matching this schema, with no prose or code fences. All existing approval, ownership and timing restrictions still apply. JSON schema: ${JSON.stringify(responseSchema)}`] : []),
           ].join('\n'),
         },
         ...(input.history ?? []).map((message) => ({ role: message.role, content: message.content })),
@@ -131,12 +152,10 @@ async function requestPlan(input: PlanInput, key: string, signal: AbortSignal, c
   })
 
   if (!response.ok) {
-    // Never echo the upstream body: it can contain prompt data or account details.
-    if (response.status === 401 || response.status === 403) {
-      throw new AssistantError('The server’s Groq credentials or model access need attention.', 503)
-    }
-    if (response.status === 429) throw new AssistantError('The AI provider is busy. Try again in a moment.', 503)
-    throw new AssistantError('The AI provider could not generate a plan. Try again shortly.', 502)
+    const failure = await readGroqFailure(response, format)
+    logGroqFailure(failure, format)
+    if (failure.kind === 'format' && format === 'json_schema') throw new GroqFormatRejected()
+    throw groqFailureError(failure)
   }
 
   const payload: unknown = await response.json()
@@ -157,6 +176,11 @@ async function requestPlan(input: PlanInput, key: string, signal: AbortSignal, c
   } catch {
     throw new AssistantError('The assistant returned an unreadable plan. Please try again.', 502)
   }
+  // JSON Object mode has no provider-side schema guarantee. Require the full
+  // envelope here, then apply the same closed operation schemas in both modes.
+  if (format === 'json_object' && (typeof decoded !== 'object' || decoded === null || !Object.hasOwn(decoded, 'operations'))) {
+    throw new AssistantError('The assistant returned an invalid plan. Please try again.', 502)
+  }
   const parsed = modelPlanSchema.safeParse(decoded)
   if (!parsed.success) throw new AssistantError('The assistant returned an invalid plan. Please try again.', 502)
   return parsed.data
@@ -174,17 +198,29 @@ function deniesCreation(input: PlanInput, plan: Awaited<ReturnType<typeof reques
 export async function generatePlan(input: PlanInput) {
   const key = requireGroqKey()
   const controller = new AbortController()
-  // Both attempts share one budget. A correction cannot double request latency.
+  // All attempts share one budget. Retries cannot multiply request latency.
   const timer = setTimeout(() => controller.abort(), GROQ_TIMEOUT_MS)
   try {
-    for (let attempt = 0; attempt < 2; attempt++) {
-      const plan = await requestPlan(input, key, controller.signal, attempt > 0)
+    let format: GroqResponseFormat = 'json_schema'
+    let correctingCapabilities = false
+    // At most one format fallback and one capability correction. Neither adds
+    // time to the shared deadline or bypasses the server's proposal validation.
+    for (let attempt = 0; attempt < 3; attempt++) {
+      let plan
+      try {
+        plan = await requestPlan(input, key, controller.signal, correctingCapabilities, format)
+      } catch (error) {
+        if (error instanceof GroqFormatRejected) { format = 'json_object'; continue }
+        throw error
+      }
       if (!deniesCreation(input, plan)) return plan
+      if (correctingCapabilities) break
+      correctingCapabilities = true
     }
     throw new AssistantError('Creating classes and events is supported, but I could not draft a reliable plan. Please retry. Nothing was saved.', 502)
   } catch (error) {
-    if (error instanceof AssistantError) throw error
     if (controller.signal.aborted) throw new AssistantError('The assistant took too long to respond. Try again.', 504)
+    if (error instanceof AssistantError) throw error
     throw new AssistantError('The AI provider is unavailable. Try again shortly.', 502)
   } finally {
     clearTimeout(timer)
