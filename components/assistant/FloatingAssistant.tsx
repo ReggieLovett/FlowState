@@ -6,6 +6,7 @@ import { useRouter } from 'next/navigation'
 import type {
   AssistantChange,
   AssistantDecisionResponse,
+  AssistantOperationPreview,
   AssistantProposal,
   AssistantResponse,
 } from '@/lib/assistant/contracts'
@@ -16,9 +17,24 @@ import styles from './assistant.module.css'
 type Phase = 'idle' | 'thinking' | 'speaking' | 'approval' | 'success' | 'error'
 type Position = { x: number; y: number }
 type Drag = { pointerId: number; clientX: number; clientY: number; origin: Position; moved: boolean }
+type HistoryMessage = { role: 'user' | 'assistant'; content: string }
 
 const INITIAL_WIDGET_STYLE: CSSProperties = { visibility: 'hidden' }
-const GREETING = 'A little space for your next big move. Ask me to find focus time, spot conflicts, or rethink your day.'
+const GREETING = 'Create a class (subject), add tasks or events, or rethink your day. Tell me what you need; you review and confirm every change.'
+const OPERATION_LABELS: Record<string, string> = {
+  'subject.create': 'New subject / class',
+  'subject.update': 'Update subject',
+  'subject.archive': 'Archive subject',
+  'subject.delete': 'Delete subject',
+  'item.create': 'New task',
+  'item.update': 'Update task',
+  'item.complete': 'Complete task',
+  'item.delete': 'Delete task',
+  'event.create': 'New event',
+  'event.update': 'Update event',
+  'event.status': 'Update event status',
+  'event.delete': 'Delete event',
+}
 const STATUS: Record<Phase, string> = {
   idle: 'Ready when you are',
   thinking: 'Meta vision · reading your timeline',
@@ -49,12 +65,31 @@ function isChange(value: unknown): value is AssistantChange {
     && ['fromStart', 'fromEnd', 'toStart', 'toEnd'].every(key => Number.isFinite(Date.parse(value[key] as string)))
 }
 
+function isOperation(value: unknown): value is AssistantOperationPreview {
+  return isRecord(value) && typeof value.kind === 'string' && typeof value.title === 'string'
+    && typeof value.reason === 'string' && typeof value.destructive === 'boolean'
+    && Array.isArray(value.details) && value.details.length > 0 && value.details.every(detail =>
+      isRecord(detail) && typeof detail.label === 'string'
+      && (detail.before === null || typeof detail.before === 'string')
+      && (detail.after === null || typeof detail.after === 'string'))
+}
+
 function isAssistantResponse(value: unknown): value is AssistantResponse {
   if (!isRecord(value) || typeof value.message !== 'string' || !isRecord(value.calendar) || typeof value.calendar.connected !== 'boolean') return false
   if (value.proposal === undefined) return true
-  return isRecord(value.proposal) && typeof value.proposal.id === 'string' && typeof value.proposal.expiresAt === 'string'
-    && Number.isFinite(Date.parse(value.proposal.expiresAt)) && Array.isArray(value.proposal.changes)
-    && value.proposal.changes.length > 0 && value.proposal.changes.every(isChange)
+  const proposal = value.proposal
+  if (!isRecord(proposal) || typeof proposal.id !== 'string' || typeof proposal.expiresAt !== 'string'
+    || !Number.isFinite(Date.parse(proposal.expiresAt)) || !Array.isArray(proposal.changes)
+    || !proposal.changes.every(isChange)) return false
+  if (proposal.operations !== undefined && (!Array.isArray(proposal.operations) || !proposal.operations.every(isOperation))) return false
+  return proposal.changes.length + (Array.isArray(proposal.operations) ? proposal.operations.length : 0) > 0
+}
+
+function boundedHistory(messages: HistoryMessage[]): HistoryMessage[] {
+  const history = messages.slice(-6).map(message => ({ ...message, content: message.content.slice(0, 1600) }))
+  let length = history.reduce((total, message) => total + message.content.length, 0)
+  while (length > 4000) length -= history.shift()!.content.length
+  return history
 }
 
 async function postJson(url: string, body: unknown, signal: AbortSignal): Promise<unknown> {
@@ -90,6 +125,24 @@ function ChangePreview({ change, timeZone }: { change: AssistantChange; timeZone
   )
 }
 
+function OperationPreview({ operation }: { operation: AssistantOperationPreview }) {
+  return (
+    <li className={styles.change} data-destructive={operation.destructive}>
+      <span className={styles.operationKind}>{OPERATION_LABELS[operation.kind] ?? 'Proposed change'}</span>
+      <strong>{operation.title}</strong>
+      <dl className={styles.operationDetails}>
+        {operation.details.map((detail, index) => (
+          <div key={`${detail.label}-${index}`}>
+            <dt>{detail.label}</dt>
+            <dd><span className={styles.srOnly}>Current: </span><span className={styles.previousValue}>{detail.before ?? '(none)'}</span><span className={styles.changeArrow} aria-hidden="true"> → </span><span className={styles.srOnly}>. Proposed: </span><span className={styles.proposedValue}>{detail.after ?? '(removed)'}</span></dd>
+          </div>
+        ))}
+      </dl>
+      <p className={styles.reason}>{operation.reason}</p>
+    </li>
+  )
+}
+
 export default function FloatingAssistant() {
   const router = useRouter()
   const id = useId()
@@ -110,6 +163,9 @@ export default function FloatingAssistant() {
   const widgetRef = useRef<HTMLDivElement>(null)
   const avatarRef = useRef<HTMLButtonElement>(null)
   const inputRef = useRef<HTMLInputElement>(null)
+  const dialogueRef = useRef<HTMLDivElement>(null)
+  // Recent conversation stays in memory and is sent only with an explicit prompt.
+  const historyRef = useRef<HistoryMessage[]>([])
   const positionRef = useRef<Position | null>(null)
   const sizeRef = useRef({ width: 0, height: 0 })
   const dragRef = useRef<Drag | null>(null)
@@ -122,6 +178,8 @@ export default function FloatingAssistant() {
   const travelRef = useRef<Animation | null>(null)
   const cornerRef = useRef(0)
   const busy = phase === 'thinking' || deciding !== null
+  const changeCount = proposal ? proposal.changes.length + (proposal.operations?.length ?? 0) : 0
+  const destructiveCount = proposal?.operations?.filter(operation => operation.destructive).length ?? 0
   const vision: IsagiVision = phase === 'thinking' ? deepThinking ? 'omni' : 'meta' : phase === 'speaking' ? 'omni' : 'normal'
 
   const walkFor = useCallback((duration: number) => {
@@ -319,8 +377,13 @@ export default function FloatingAssistant() {
     setPhase('thinking')
     visionTimerRef.current = setTimeout(() => setDeepThinking(true), 3500)
     try {
-      const result = await postJson('/api/assistant', { prompt: text, timeZone }, controller.signal)
+      const result = await postJson('/api/assistant', { prompt: text, timeZone, history: historyRef.current }, controller.signal)
       if (!isAssistantResponse(result)) throw new Error('The assistant returned an incomplete response. Please try again.')
+      historyRef.current = boundedHistory([
+        ...historyRef.current,
+        { role: 'user', content: text },
+        { role: 'assistant', content: result.proposal ? `Proposal ${result.proposal.id} awaits confirmation. No changes applied.\n${result.message}` : result.message },
+      ])
       setMessage(result.message)
       setCalendar(result.calendar)
       setProposal(result.proposal ?? null)
@@ -328,10 +391,12 @@ export default function FloatingAssistant() {
       setPrompt('')
       setPhase('speaking')
       speakingTimerRef.current = setTimeout(() => setPhase(result.proposal ? 'approval' : 'idle'), 2200)
+      requestAnimationFrame(() => (result.proposal ? dialogueRef.current : inputRef.current)?.focus({ preventScroll: true }))
     } catch (failure) {
       if (controller.signal.aborted) return
       setError(failure instanceof Error ? failure.message : 'The connection was interrupted. Your prompt is saved below.')
       setPhase('error')
+      requestAnimationFrame(() => inputRef.current?.focus({ preventScroll: true }))
     } finally {
       if (visionTimerRef.current) clearTimeout(visionTimerRef.current)
       if (requestRef.current === controller) requestRef.current = null
@@ -350,6 +415,11 @@ export default function FloatingAssistant() {
       const result = await postJson(`/api/assistant/proposals/${encodeURIComponent(proposal.id)}`, { action }, controller.signal)
       if (!isRecord(result) || typeof result.message !== 'string' || (result.status !== 'APPLIED' && result.status !== 'CANCELLED')) throw new Error('The confirmation response was incomplete. Retry to check the saved plan’s status.')
       const decision = result as unknown as AssistantDecisionResponse
+      historyRef.current = boundedHistory([
+        ...historyRef.current,
+        { role: 'user', content: `I chose to ${action} proposal ${proposal.id}.` },
+        { role: 'assistant', content: `Proposal ${proposal.id}: ${decision.status === 'APPLIED' ? 'changes applied' : 'cancelled; no changes applied'}.\n${decision.message}` },
+      ])
       setMessage(decision.message)
       setProposal(null)
       setPhase(decision.status === 'APPLIED' ? 'success' : 'idle')
@@ -359,6 +429,7 @@ export default function FloatingAssistant() {
       if (controller.signal.aborted) return
       setError(failure instanceof Error ? failure.message : 'The connection was interrupted. Retry to check this plan’s status.')
       setPhase('approval')
+      requestAnimationFrame(() => dialogueRef.current?.focus({ preventScroll: true }))
     } finally {
       if (requestRef.current === controller) requestRef.current = null
       if (!controller.signal.aborted) setDeciding(null)
@@ -390,23 +461,27 @@ export default function FloatingAssistant() {
                     <button type="button" className={styles.iconButton} onClick={minimize} aria-label="Minimize assistant" title="Minimize (Escape)"><CloseIcon /></button>
                   </div>
                 </div>
-                <div className={styles.bubbleContent} tabIndex={0} aria-label="Assistant dialogue and proposed changes">
+                <div ref={dialogueRef} className={styles.bubbleContent} tabIndex={0} aria-label="Assistant dialogue and proposed changes" aria-busy={busy}>
                   {phase === 'thinking' ? <p className={styles.thinking}><span className={styles.thinkingDots} aria-hidden="true"><i /><i /><i /></span>Reading the field. Finding your flow.</p> : <p className={styles.message} role="status" aria-live="polite">{message}</p>}
-                  {error ? <p className={styles.error} role="alert">{error}</p> : null}
+                  {error ? <p id={`${id}-error`} className={styles.error} role="alert">{error}</p> : null}
                   {proposal ? (
                     <div className={styles.proposal}>
-                      <div className={styles.proposalHeading}><span className={styles.planIcon} aria-hidden="true">↗</span><div><strong>{proposal.changes.length} {proposal.changes.length === 1 ? 'move' : 'moves'} for a better day</strong><span>Review every change before confirming.</span></div></div>
-                      <ol className={styles.changes}>{proposal.changes.map(change => <ChangePreview key={change.eventId} change={change} timeZone={timeZone} />)}</ol>
+                      <div className={styles.proposalHeading}><span className={styles.planIcon} aria-hidden="true">↗</span><div><strong>{changeCount} {changeCount === 1 ? 'change' : 'changes'} to review</strong><span>Nothing is applied until you confirm.</span></div></div>
+                      {destructiveCount > 0 ? <p className={styles.destructiveNote}>{destructiveCount} {destructiveCount === 1 ? 'change deletes data' : 'changes delete data'}. Review the affected records below before confirming.</p> : null}
+                      <ol className={styles.changes}>
+                        {proposal.changes.map(change => <ChangePreview key={change.eventId} change={change} timeZone={timeZone} />)}
+                        {proposal.operations?.map((operation, index) => <OperationPreview key={`${operation.kind}-${index}`} operation={operation} />)}
+                      </ol>
                     </div>
                   ) : null}
                   {calendar?.warning ? <p className={styles.calendarNote}>{calendar.warning}</p> : calendar ? <p className={styles.calendarNote}>{calendar.connected ? 'Includes your connected Google Calendar.' : 'Using FlowState events. Connect Google Calendar in Settings to include it.'}</p> : null}
                 </div>
                 {proposal ? (
                   <div className={styles.confirmation}>
-                    <p>{expired ? 'This plan expired. Cancel it to request a fresh plan.' : 'Only Confirm applies these schedule changes.'}</p>
+                    <p>{expired ? 'This plan expired. Cancel it to request a fresh plan.' : 'Confirm applies all changes shown above. Cancel keeps your data as it is.'}</p>
                     <div className={styles.decisionButtons}>
                       <button type="button" className={styles.cancelButton} onClick={() => void decide('cancel')} disabled={busy}>{deciding === 'cancel' ? 'Cancelling…' : 'Cancel'}</button>
-                      <button type="button" className={styles.confirmButton} onClick={() => void decide('confirm')} disabled={busy || expired}>{deciding === 'confirm' ? 'Confirming…' : 'Confirm changes'}<span aria-hidden="true">↗</span></button>
+                      <button type="button" className={styles.confirmButton} data-destructive={destructiveCount > 0} onClick={() => void decide('confirm')} disabled={busy || expired}>{deciding === 'confirm' ? 'Confirming…' : 'Confirm changes'}<span aria-hidden="true">↗</span></button>
                     </div>
                   </div>
                 ) : null}
@@ -414,11 +489,11 @@ export default function FloatingAssistant() {
               <form className={styles.composer} onSubmit={ask} aria-label="Ask Isagi">
                 <div className={styles.inputGroup}>
                   <label htmlFor={`${id}-prompt`}>{proposal ? 'Review your plan above' : 'Ask Isagi'}</label>
-                  <input ref={inputRef} id={`${id}-prompt`} type="text" value={prompt} onChange={event => setPrompt(event.target.value)} placeholder="Find my next move…" maxLength={2000} disabled={busy || proposal !== null} autoComplete="off" aria-describedby={`${id}-privacy`} />
+                  <input ref={inputRef} id={`${id}-prompt`} type="text" value={prompt} onChange={event => setPrompt(event.target.value)} placeholder="Add a class, task, or event…" maxLength={2000} disabled={busy || proposal !== null} autoComplete="off" aria-invalid={error ? true : undefined} aria-describedby={`${id}-privacy${error ? ` ${id}-error` : ''}`} />
                 </div>
                 <button type="submit" className={styles.sendButton} disabled={!prompt.trim() || busy || proposal !== null} aria-label="Send prompt"><ArrowIcon /></button>
               </form>
-              <span className={styles.srOnly} id={`${id}-privacy`}>Your prompt and relevant schedule details are sent to Groq. Schedule changes always require your confirmation.</span>
+              <span className={styles.srOnly} id={`${id}-privacy`}>Your prompt, recent conversation, and relevant schedule details are sent to Groq. All changes require your confirmation. Review the current plan or cancel it before sending another prompt.</span>
             </>
           ) : null}
 

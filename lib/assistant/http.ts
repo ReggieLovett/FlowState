@@ -16,6 +16,15 @@ export const assistantDecisionPolicy = {
 
 export const promptSchema = z.strictObject({
   prompt: z.string().trim().min(1).max(2000),
+  // Recent dialogue supports clarification without granting it any authority.
+  // Client-supplied history can never contain a system/tool role or approval.
+  history: z.array(z.strictObject({
+    role: z.enum(['user', 'assistant']),
+    content: z.string().trim().min(1).max(1600),
+  })).max(6).refine(
+    messages => messages.reduce((total, message) => total + message.content.length, 0) <= 4000,
+    'Recent conversation is too long.',
+  ).optional(),
   timeZone: z.string().min(1).max(100).refine((value) => {
     try { new Intl.DateTimeFormat('en', { timeZone: value }).format(); return true } catch { return false }
   }, 'Use a valid IANA time zone.'),
@@ -25,7 +34,8 @@ export const decisionSchema = z.strictObject({ action: z.enum(['confirm', 'cance
 
 /** Bound streamed input too; Content-Length alone is optional and untrusted. */
 export async function readAssistantJson(request: Request): Promise<unknown> {
-  const MAX_BYTES = 8192
+  // Enough for a Unicode prompt plus the bounded recent dialogue above.
+  const MAX_BYTES = 32 * 1024
   if (Number(request.headers.get('content-length')) > MAX_BYTES) throw new AssistantError('Request body is too large.', 413)
   const reader = request.body?.getReader()
   if (!reader) throw new AssistantError('Body must be JSON.')

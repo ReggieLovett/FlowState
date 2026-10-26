@@ -232,8 +232,9 @@ outranked one with an exam three weeks out.
 ## Isagi scheduling assistant
 
 The assistant floats beside your dashboard: type a prompt, read Isagi's reply,
-and review each proposed move in the dialogue bubble. Confirm applies the stored
-plan; Cancel leaves scheduled events untouched. Idle, walking, meta vision eyes and white/glowing omni vision have distinct
+and review the proposed changes in the dialogue bubble. It can create and manage
+classes, tasks, assignments, projects, exams and calendar events. Confirm applies
+the stored plan; Cancel keeps your data unchanged. Idle, walking, meta vision eyes and white/glowing omni vision have distinct
 animation states. Drag the avatar or use its keyboard/docking controls.
 
 1. Add `GROQ_API_KEY` to your server environment. The model is
@@ -245,10 +246,24 @@ animation states. Drag the avatar or use its keyboard/docking controls.
    `{origin}/api/auth/callback/google` as the web OAuth callback.
 4. While signed into FlowState, connect Google Calendar in Settings. The
    assistant reads busy events from your primary calendar. Google events stay
-   read-only; confirmed changes move FlowState events.
+   read-only; confirmed changes update FlowState records.
 
-The assistant uses a bounded future window and requires a new proposal if the
-calendar changed, a proposal expired, or a provider returned incomplete data.
+Try “Create a Biology class”, “Add a lab report assignment to Biology due Friday”,
+or “Schedule a Biology lesson tomorrow at 9 AM for one hour”. One prompt can
+create a class, its work items and linked lessons together. If an event is missing
+its date, start time or duration, the assistant asks a follow-up question. Recent
+dialogue stays in browser memory and is included with your next prompt.
+
+Each proposal contains at most 12 changes and expires after 10 minutes. New or
+rescheduled calendar times must be within the next 14 days. Repeat requests expand
+into individually dated lessons in that window; they do not create a permanent
+recurring series. Class metadata and task deadlines are not limited to 14 days.
+The assistant rechecks records and conflicts at confirmation and discloses
+permanent deletion effects before approval. An unavailable linked Calendar blocks
+time changes, while class/task metadata can still be proposed.
+
+This extension uses the existing assistant proposal JSON columns and needs no
+additional migration if the original assistant migration is already applied.
 No live database migration is run by `npm run build`.
 
 See [HANDOFF.md](HANDOFF.md) for the API contract, implementation map, setup,

@@ -23,9 +23,9 @@ export async function POST(request: Request) {
     const limit = await consumeForUser(assistantPromptPolicy, userId)
     if (!limit.ok) return tooManyRequests(assistantPromptPolicy, limit)
     const parsed = promptSchema.safeParse(await readAssistantJson(request))
-    if (!parsed.success) throw new AssistantError('Provide a prompt of 1–2000 characters and a valid IANA time zone.')
+    if (!parsed.success) throw new AssistantError('Provide a prompt of 1–2000 characters, a valid time zone, and at most six recent messages (4000 characters total).')
 
-    const result = await askAssistant(userId, parsed.data.prompt, parsed.data.timeZone)
+    const result = await askAssistant(userId, parsed.data.prompt, parsed.data.timeZone, parsed.data.history)
     return NextResponse.json(result, { headers: { ...rateLimitHeaders(limit), 'Cache-Control': 'no-store' } })
   } catch (error) {
     return assistantErrorResponse(error)

@@ -1,4 +1,5 @@
 import { NextResponse } from 'next/server'
+import { revalidatePath } from 'next/cache'
 import { getUserId } from '@/lib/auth-guard'
 import { rejectCrossOrigin, rejectNonJson } from '@/lib/http/request-guards'
 import { consumeForUser } from '@/lib/rate-limit-user'
@@ -28,6 +29,7 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
     if (!parsed.success) throw new AssistantError('Choose confirm or cancel. Proposal contents cannot be edited.')
 
     const result = await decideProposal(userId, id, parsed.data.action)
+    if (result.status === 'APPLIED') revalidatePath('/dashboard', 'layout')
     return NextResponse.json(result, { headers: { ...rateLimitHeaders(limit), 'Cache-Control': 'no-store' } })
   } catch (error) {
     return assistantErrorResponse(error)

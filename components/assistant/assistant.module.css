@@ -6,6 +6,9 @@
   --assistant-line: #364151;
   --assistant-accent: #a3edcf;
   --assistant-ink: #0a291f;
+  --assistant-danger: #ffc8c2;
+  --assistant-danger-ink: #3d1714;
+  --assistant-danger-line: #a67470;
   --assistant-ease-out: cubic-bezier(0.23, 1, 0.32, 1);
   position: fixed;
   inset: 0 auto auto 0;
@@ -288,6 +291,66 @@
   overflow-wrap: anywhere;
 }
 
+.operationKind {
+  display: block;
+  margin-bottom: 5px;
+  color: var(--assistant-accent);
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  overflow-wrap: anywhere;
+}
+
+.operationDetails {
+  display: grid;
+  gap: 10px;
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.7;
+}
+
+.operationDetails dt {
+  margin-bottom: 2px;
+  color: var(--assistant-muted);
+  font-size: 10px;
+  font-weight: 500;
+}
+
+.operationDetails dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+  font-variant-numeric: tabular-nums;
+}
+
+.previousValue,
+.changeArrow {
+  color: var(--assistant-muted);
+}
+
+.proposedValue {
+  color: var(--assistant-accent);
+}
+
+.change[data-destructive='true'] {
+  border-color: var(--assistant-danger-line);
+}
+
+.change[data-destructive='true'] .operationKind,
+.change[data-destructive='true'] .proposedValue {
+  color: var(--assistant-danger);
+}
+
+.destructiveNote {
+  margin: 0 0 12px;
+  padding: 10px 12px;
+  border: 1px solid var(--assistant-danger-line);
+  border-radius: 10px;
+  color: var(--assistant-danger);
+  font-size: 12px;
+  line-height: 1.6;
+}
+
 .times {
   display: grid;
   gap: 8px;
@@ -363,6 +426,12 @@
   border-color: var(--assistant-accent);
   background: var(--assistant-accent);
   color: var(--assistant-ink);
+}
+
+.confirmButton[data-destructive='true'] {
+  border-color: var(--assistant-danger);
+  background: var(--assistant-danger);
+  color: var(--assistant-danger-ink);
 }
 
 .composer {

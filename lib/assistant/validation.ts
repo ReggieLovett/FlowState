@@ -1,11 +1,9 @@
 import { z } from 'zod'
 import type { AssistantChange } from './contracts'
 
-export const MAX_MOVES = 12
-export const MAX_LOCAL_EVENTS = 200
-export const MAX_ITEMS = 60
-export const WINDOW_DAYS = 14
-export const PROPOSAL_LIFETIME_MS = 10 * 60_000
+import { assistantOperationSchema } from './operations'
+import { MAX_MOVES, PlanValidationError, eventSnapshotSchema, type EventSnapshot, type BusyInterval, type PlanningWindow } from './primitives'
+export * from './primitives'
 
 const instant = z.iso.datetime({ offset: true })
 const eventId = z.string().min(1).max(191)
@@ -18,22 +16,13 @@ export const modelPlanSchema = z.strictObject({
     toEnd: instant,
     reason: z.string().trim().min(1).max(280),
   })).max(MAX_MOVES),
+  // Old pending move-only proposals and provider mocks remain readable.
+  operations: z.array(assistantOperationSchema).max(MAX_MOVES).default([]),
+}).superRefine((plan, ctx) => {
+  if (plan.changes.length + plan.operations.length > MAX_MOVES) ctx.addIssue({ code: 'custom', message: 'A plan supports at most 12 total changes.' })
 })
 
 export type ModelPlan = z.infer<typeof modelPlanSchema>
-
-export const eventSnapshotSchema = z.strictObject({
-  id: eventId,
-  title: z.string(),
-  startsAt: instant,
-  endsAt: instant,
-  updatedAt: instant,
-  status: z.enum(['SCHEDULED', 'COMPLETED', 'CANCELLED']),
-  isAllDay: z.boolean(),
-  recurrenceRule: z.string().nullable(),
-})
-
-export type EventSnapshot = z.infer<typeof eventSnapshotSchema>
 
 export const storedChangesSchema = z.array(z.strictObject({
   eventId,
@@ -51,25 +40,6 @@ export const storedSnapshotSchema = z.strictObject({
   events: z.array(eventSnapshotSchema).min(1).max(MAX_MOVES),
 })
 
-export interface BusyInterval {
-  id: string
-  title: string
-  startsAt: string
-  endsAt: string
-}
-
-export interface PlanningWindow {
-  start: Date
-  end: Date
-}
-
-export class PlanValidationError extends Error {
-  constructor(message: string) {
-    super(message)
-    this.name = 'PlanValidationError'
-  }
-}
-
 /** Derive the original times and title from trusted rows, never model output. */
 export function validateMoves(
   candidates: ModelPlan['changes'],
@@ -77,6 +47,7 @@ export function validateMoves(
   googleEvents: BusyInterval[],
   window: PlanningWindow,
   now = new Date(),
+  checkTimeline = true,
 ): AssistantChange[] {
   if (candidates.length > MAX_MOVES) throw new PlanValidationError('This plan moves too many events.')
 
@@ -125,7 +96,7 @@ export function validateMoves(
     }
   })
 
-  validateFinalTimeline(changes, events, googleEvents)
+  if (checkTimeline) validateFinalTimeline(changes, events, googleEvents)
   return changes
 }
 

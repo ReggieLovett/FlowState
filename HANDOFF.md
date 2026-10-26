@@ -1,18 +1,18 @@
 # FlowState assistant and performance handoff
 
-Updated: 2026-10-26 (Asia/Manila). Implementation is complete. Verification results and remaining live setup are recorded below. No live database migration or deployment has been performed.
+Updated: 2026-10-26 (Asia/Manila). Natural-language creation and management of classes, tasks and events is implemented. Verification results and remaining live setup are recorded below. No live database migration or deployment has been performed.
 
 ## User direction
 
 Integrate the assistant and optimize the overall app. Keep FlowState recognizable: existing palette, typography, layout, pixel rewards, and theme preference behavior remain. The user approved restrained design improvements after initially asking to preserve the old look. Final polish is limited to slightly softer cards, clearer focus outlines, touch targets and an accessible mobile drawer.
 
-The assistant must use Groq `openai/gpt-oss-120b`, read the owner's FlowState schedule and Google Calendar, show a movable Isagi Yoichi avatar, use a compact input with nearby dialogue bubbles, and require explicit Confirm before every assistant schedule edit. Idle, walking, meta vision eyes and white/glowing omni vision must be distinct.
+The assistant uses Groq `openai/gpt-oss-120b`, reads the owner's FlowState schedule and Google Calendar, shows a movable Isagi Yoichi avatar, uses a compact input with nearby dialogue bubbles, and requires explicit Confirm before every assistant domain write, including creation, completion and deletion. Idle, walking, meta vision eyes and white/glowing omni vision are distinct.
 
 ## Resume safely if the session or connection ends
 
 1. Work in `/Users/reggielovett/Desktop/projects/project shed` and read `AGENTS.md`.
 2. Read the relevant installed Next guides under `node_modules/next/dist/docs/`. Versions here are Next.js 16.3, React 19, Prisma 7 and Auth.js v5 beta.
-3. Inspect `git status --short` before editing. The untracked `integrations/google-calendar/` directory existed before this task and is user work; preserve it.
+3. Inspect `git status --short` before editing. Preserve `integrations/google-calendar/` and unrelated user work. The tree was clean at the start of the latest class-management extension.
 4. Do not print or commit `.env*` secrets, OAuth tokens, prompts or private calendar details.
 5. No live database migration, Google event write, production deployment or Git commit was performed. Do not assume the new proposal table exists yet.
 6. The local development server was started with `npm run dev -- --hostname 127.0.0.1`. If it is no longer running, start it again. The avatar-only preview is `/assistant-demo` and needs no account or provider keys.
@@ -44,6 +44,8 @@ npm start
 
 Migration: `prisma/migrations/20261026000000_add_assistant_proposals/migration.sql`. It creates the proposal enum/table, ownership and lookup indexes, consistency checks and an immutability trigger. Restart a running development server after generating the client/applying the migration. `npm run build` generates the client but does not apply database migrations.
 
+The class/task/event extension requires no new schema migration: version 2 payloads use the existing immutable JSONB columns. Already deployed installations only need the updated application code if the original assistant migration is applied. Existing pending version 1 move proposals remain supported.
+
 The original Google Fonts setup is retained to preserve appearance. A clean build needs font network access (or an existing Next font cache); the initial sandboxed build failed on that network dependency. No runtime Google Fonts requests are added by the assistant. Installed unit tests/lint/type checks work without provider access.
 
 ## Implementation map
@@ -55,6 +57,9 @@ The original Google Fonts setup is retained to preserve appearance. A clean buil
 - `lib/assistant/context.ts`: bounded owner-scoped schedule/task context and recurrence/truncation detection.
 - `lib/assistant/service.ts`: proposal staging and transactional decision orchestration.
 - `lib/assistant/validation.ts`: pure move, conflict, snapshot and decision validation.
+- `lib/assistant/operations.ts`: closed class/work-item/event operation schemas, server-derived previews, reference validation, local all-day boundaries and combined timeline validation.
+- `lib/assistant/mutation-persistence.ts`: scoped dependency reads, deletion impact snapshots, ordered row locks and atomic operation writes.
+- `lib/assistant/primitives.ts`: shared limits, interval types and legacy event snapshots.
 - `lib/assistant/http.ts`: body limits, schemas, request policies and safe errors.
 - `lib/assistant/google-calendar.ts`: owner-scoped OAuth token refresh/persistence, paginated event reads, all-day timezone normalization and fail-closed partial reads.
 - `auth.ts`, `lib/actions/google-calendar.ts`, `components/dashboard/GoogleCalendarConnect.tsx`: OAuth provider, safe reconnect token persistence and connection action/UI.
@@ -70,7 +75,14 @@ The original Google Fonts setup is retained to preserve appearance. A clean buil
 `POST /api/assistant`, same-origin JSON:
 
 ```json
-{ "prompt": "Resolve tomorrow's conflicts", "timeZone": "Asia/Manila" }
+{
+  "prompt": "9 AM for one hour",
+  "timeZone": "Asia/Manila",
+  "history": [
+    { "role": "user", "content": "Create Biology and add a lesson tomorrow" },
+    { "role": "assistant", "content": "When does the lesson start, and how long is it?" }
+  ]
+}
 ```
 
 Response shape:
@@ -80,7 +92,8 @@ Response shape:
   message,
   proposal?: {
     id, expiresAt,
-    changes: [{ eventId, title, fromStart, fromEnd, toStart, toEnd, reason }]
+    changes: [{ eventId, title, fromStart, fromEnd, toStart, toEnd, reason }],
+    operations?: [{ kind, title, details: [{ label, before, after }], reason, destructive }]
   },
   calendar: { connected, warning? }
 }
@@ -92,13 +105,19 @@ Response shape:
 { "action": "confirm" }
 ```
 
-Use `"cancel"` to reject. The endpoint accepts only the saved ID and decision; it refuses edited event IDs, times or other fields. Success is `{ message, status: "APPLIED" | "CANCELLED" }`. Errors are `{ error }` with an HTTP status. Routes explicitly return 401 for signed-out requests, 403 for rejected origins and 415 for non-JSON content. Prompt limit is 8 per 10 minutes; decisions 30 per minute. Body cap is 8 KiB, prompt cap 2000 characters.
+Use `"cancel"` to reject. The endpoint accepts only the saved ID and decision; it refuses replacement plans, history, owner IDs, edited times or other fields. Success is `{ message, status: "APPLIED" | "CANCELLED" }`. Applied decisions invalidate the dashboard layout; the client refreshes server data. Errors are `{ error }` with an HTTP status. Routes explicitly return 401 for signed-out requests, 403 for rejected origins and 415 for non-JSON content. Prompt limit is 8 per 10 minutes; decisions 30 per minute. Body cap is 32 KiB, prompt cap 2000 characters. Optional history permits at most six user/assistant messages, 1600 characters each and 4000 combined; system/tool roles and extra fields are rejected.
+
+History stays in browser memory, records Confirm/Cancel outcomes, and is sent only with the next prompt. It is untrusted conversational context, never approval. It clears when the component unmounts. Missing essential event dates, start times or duration trigger clarification; ambiguous record names should also trigger clarification.
 
 ## Confirmation guarantee
 
-Prompt processing writes only an immutable pending proposal, never a schedule event. Only existing owned, future, scheduled, timed, nonrecurring FlowState events can move. Durations and titles are preserved. No create/delete/complete operation is exposed to the model.
+Prompt processing writes only an immutable pending proposal, never a class, work item or schedule event. The model can select only a closed operation vocabulary: subject create/update/archive/restore/delete, item create/update/complete/reopen/delete, event create/update/status/delete, and existing event moves. Real persistent IDs and user ownership always come from the server. Temporary `new:` references link a new class, work item and lesson inside one proposal.
 
-Confirm re-reads Google busy intervals, locks the owner's proposal row, checks expiry/status and exact source snapshots, validates the whole resulting local timeline, and guards each write by owner/source timestamps. Event moves and APPLIED status commit together in a serializable transaction, with bounded serialization retries. Repeat decisions are idempotent; an applied/cancelled decision cannot be reversed. Cancellation changes proposal status only, including after expiry.
+Confirm locks the owner's proposal, checks expiry/status, acquires affected parent/child locks in deterministic order, rereads exact source and cascade snapshots, revalidates names and relationships, and checks the resulting timeline against fresh FlowState and Google busy intervals when times change. Updates and APPLIED status commit together in a serializable transaction, with bounded serialization retries. Repeat decisions are idempotent; an applied/cancelled decision cannot be reversed. Cancellation changes proposal status only, including after expiry. Metadata-only confirmations do not require a successful Google read.
+
+Deletion follows the app's existing behavior and shows server-derived affected counts: deleting a class permanently removes its work items and detaches retained calendar events; deleting a work item removes unfinished linked blocks and detaches retained completed blocks. Changing affected children after review invalidates confirmation. Operations affecting more than 500 related records require the manual editor. This is hard deletion, not a trash flow.
+
+Move operations preserve duration/title and target scheduled timed nonrecurring future events. Event updates can resize future scheduled nonrecurring blocks. All-day events use the user's local midnight and an exclusive end date, including 23/25-hour DST days. Date-only class exam dates and item due dates remain calendar dates.
 
 ## Avatar behavior and references
 
@@ -125,10 +144,10 @@ Visual references: [official Isagi design](https://tv.bluelock-pr.com/tv1st/char
 
 ## Known limits and remaining live verification
 
-- The assistant plans only the next 14 days, at most 12 moves, with 10-minute proposal expiry.
-- Context caps: 200 local events, 60 unfinished tasks, 500 Google busy intervals at orchestration. Calendar reader itself can traverse four pages of 250, and rejects incomplete/malformed results. Caps block schedule actions; no partial availability is treated as complete.
-- An unconnected Google account permits FlowState-only advice/plans and the UI says so. A linked but unavailable/unauthorized/incomplete calendar blocks actions.
-- Local RRULE occurrence expansion is not implemented by the original app. Any relevant scheduled recurring series conservatively blocks assistant moves; Google recurrences are expanded by Google.
+- New/changed calendar times are limited to the next 14 days, with at most 12 total moves/operations and 10-minute proposal expiry. Class metadata and date-only task deadlines can extend beyond the event window.
+- Model context caps: 200 local events, 60 work items (TODO first), 120 classes (active first), 500 Google busy intervals at orchestration. Authoritative mutation/deletion reads separately check owned dependencies and all class names, bounded at 500 records. Calendar reader itself can traverse four pages of 250, and rejects incomplete/malformed results. Truncated event context blocks time changes; omitted work/classes cannot be guessed by the model.
+- An unconnected Google account permits FlowState-only advice/plans and the UI says so. A linked but unavailable/unauthorized/incomplete calendar blocks new/changed times. Class/task metadata, status and deletion can still be reviewed.
+- Local RRULE occurrence expansion is not implemented by the original app. Any relevant scheduled recurring series conservatively blocks assistant time changes; Google recurrences are expanded by Google. New repeat requests expand into explicitly dated occurrences only within the 14-day window and action cap; no permanent recurring series is created.
 - Google can change after its pretransaction read. An external calendar cannot be locked atomically with PostgreSQL. No Google writes occur.
 - Real OAuth consent/reconnect, live Groq inference, database migration/trigger enforcement and actual PostgreSQL concurrency still need verification with configured credentials and a scratch database. Tests use mocked HTTP and a transactional store, not a live Postgres server.
 - Full lifetime progress history remains necessary for XP, streaks and achievements. It was not truncated or cached across users.
@@ -139,12 +158,23 @@ Completed so far:
 
 - `npm run lint`: passed.
 - `npm run typecheck`: passed.
-- `npm test`: all 32 tests passed (27 assistant/calendar/lifecycle tests and five schedule-range regression tests).
+- `npm test`: all 63 tests passed, including 31 new HTTP/domain/persistence tests beyond the original 32-test suite. Coverage includes linked class/task/event creation, all CRUD branches, rollback, stale snapshots, tenant isolation, duplicate names, cascade effects, JSONB key reordering, unavailable Calendar metadata changes, Manila all-day times, DST and mixed-plan conflicts.
 - `npx prisma validate`: passed; `prisma generate` passed. No migration applied.
 - Local HTTP checks: signed-out prompt/confirm 401, cross-origin prompt 403, text/plain body 415.
-- Browser: original floating prompt/response/confirmation layout tested with isolated mock data; cancel and interrupted-request prompt retention verified. Temporary mock route was deleted. Actual avatar-only showcase tested for normal/meta/omni selection and eye close-ups.
+- Browser: original floating prompt/response/confirmation layout tested with isolated mock data; cancel and interrupted-request prompt retention verified. Latest extension verified missing-time follow-up, history carryover, three linked creation previews, no mock confirm before approval, cancellation, successful confirmation with input restoration, and destructive warning/cascade count review. Temporary routes/tabs were deleted. Actual avatar-only showcase tested for normal/meta/omni selection and eye close-ups.
 - `npm run build`: passed with original fonts; production routes include both assistant APIs and `/assistant-demo`.
 - Native mobile drawer checked in an isolated temporary route: initial close-button focus, Escape dismissal and trigger focus restoration passed. Temporary route and tab were removed.
 - `git diff --check`: passed.
 
-Preview artifact: `docs/screenshots/isagi-states.png` (real browser capture). Open `http://127.0.0.1:3000/assistant-demo` while the dev server is running to see movement and select eye close-ups. This preview route is intentionally isolated from account and scheduling data.
+Preview artifacts: `docs/screenshots/isagi-states.png` (avatar states) and `docs/screenshots/isagi-class-proposal.png` (class/task/lesson review with mock data), both real browser captures. Open `http://127.0.0.1:3000/assistant-demo` while the dev server is running to see movement and select eye close-ups. This preview route is intentionally isolated from account and scheduling data.
+
+
+## Latest extension: usage examples
+
+- “Create a Biology class.” This creates the class container; a dated lesson needs a separate event operation.
+- “Create Biology, add a lab report assignment due Friday, and schedule a lesson tomorrow at 9 AM for one hour.” The class, assignment and lesson can be proposed and saved together.
+- “Mark my Biology lab report complete.” Ambiguous matching records require clarification.
+- “Move tomorrow's Biology lesson to 11 AM.” Fresh local/Google conflict checks apply.
+- “Archive Biology” or “Delete Biology.” Both require Confirm; deletion discloses affected records and is permanent.
+
+No Google writes, account/security administration, or unrestricted database tool is exposed. Live Groq output, OAuth and PostgreSQL concurrency still require configured credentials/scratch database checks as described above; the local Groq key was not configured during this extension's verification.

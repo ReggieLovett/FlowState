@@ -297,8 +297,8 @@ enum AssistantProposalStatus {
   CANCELLED
 }
 
-/// The assistant can only stage immutable moves. An authenticated, explicit
-/// confirmation applies those moves and advances status in one transaction.
+/// The assistant stages immutable domain changes. An authenticated, explicit
+/// confirmation applies the reviewed plan and advances status in one transaction.
 /// The migration also protects the snapshot columns against later mutation.
 model AssistantProposal {
   id     String @id @default(cuid())
@@ -307,7 +307,7 @@ model AssistantProposal {
 
   status      AssistantProposalStatus @default(PENDING)
   message     String                  @db.Text
-  /// Server-derived original times/title, proposed times and short reasons.
+  /// Legacy move array, or version 2 object containing moves and domain operations.
   changes     Json
   /// Versioned source row snapshots, including updatedAt and calendar state.
   snapshot    Json

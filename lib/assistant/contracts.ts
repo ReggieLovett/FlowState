@@ -1,4 +1,4 @@
-/** Browser-safe API contracts. Secrets, prompts and database clients stay server-side. */
+/** Browser-safe API contracts. Provider secrets and database clients stay server-side. */
 export interface AssistantChange {
   eventId: string
   title: string
@@ -13,6 +13,16 @@ export interface AssistantProposal {
   id: string
   expiresAt: string
   changes: AssistantChange[]
+  operations?: AssistantOperationPreview[]
+}
+
+/** Human-readable, server-derived review. Never accepted as mutation input. */
+export interface AssistantOperationPreview {
+  kind: string
+  title: string
+  details: Array<{ label: string; before: string | null; after: string | null }>
+  reason: string
+  destructive: boolean
 }
 
 export interface AssistantResponse {
