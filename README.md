@@ -266,6 +266,11 @@ This extension uses the existing assistant proposal JSON columns and needs no
 additional migration if the original assistant migration is already applied.
 No live database migration is run by `npm run build`.
 
+If a Vercel deployment still says it can only move existing events, deploy the
+latest source revision and reload the app. Open `/api/assistant` on that deployment
+to check: the current version is `flowstate-crud-v2.1` and `canCreateEvents` is true.
+An empty calendar supports creating its first event; no manual event is required.
+
 See [HANDOFF.md](HANDOFF.md) for the API contract, implementation map, setup,
 verification, limits, and recovery instructions if a session or connection ends.
 

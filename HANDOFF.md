@@ -54,6 +54,7 @@ The original Google Fonts setup is retained to preserve appearance. A clean buil
 - `app/api/assistant/proposals/[id]/route.ts`: explicit Confirm/Cancel endpoint.
 - `lib/assistant/contracts.ts`: browser-safe request response types.
 - `lib/assistant/groq.ts`: server-only strict JSON schema Groq fetch, timeout, refusal/error handling.
+- `lib/assistant/capabilities.ts`: public assistant version/capability marker for identifying stale deployments.
 - `lib/assistant/context.ts`: bounded owner-scoped schedule/task context and recurrence/truncation detection.
 - `lib/assistant/service.ts`: proposal staging and transactional decision orchestration.
 - `lib/assistant/validation.ts`: pure move, conflict, snapshot and decision validation.
@@ -71,6 +72,8 @@ The original Google Fonts setup is retained to preserve appearance. A clean buil
 - `lib/schedule-range.ts`: bounded calendar read windows, offsets and event deduplication.
 
 ## API contract
+
+`GET /api/assistant` returns public build capabilities without account data or provider secrets. The current marker is `version: "flowstate-crud-v2.1"`, with `canCreateClasses`, `canCreateWorkItems`, `canCreateEvents` and `requiresConfirmation` all true. The same version is returned in `X-FlowState-Assistant-Version` on successful prompt responses. This read-only diagnostic uses `Cache-Control: no-store`.
 
 `POST /api/assistant`, same-origin JSON:
 
@@ -158,7 +161,7 @@ Completed so far:
 
 - `npm run lint`: passed.
 - `npm run typecheck`: passed.
-- `npm test`: all 63 tests passed, including 31 new HTTP/domain/persistence tests beyond the original 32-test suite. Coverage includes linked class/task/event creation, all CRUD branches, rollback, stale snapshots, tenant isolation, duplicate names, cascade effects, JSONB key reordering, unavailable Calendar metadata changes, Manila all-day times, DST and mixed-plan conflicts.
+- `npm test`: all 72 tests passed, including HTTP/domain/persistence coverage and nine provider-adapter regression tests. Coverage includes linked class/task/event creation, all CRUD branches, rollback, stale snapshots, tenant isolation, duplicate names, cascade effects, JSONB key reordering, unavailable Calendar metadata changes, Manila all-day times, DST and mixed-plan conflicts. Provider tests cover the reported move-only refusal, empty calendars, stale history, one bounded correction, its shared timeout, and preservation of actual restrictions/refusals.
 - `npx prisma validate`: passed; `prisma generate` passed. No migration applied.
 - Local HTTP checks: signed-out prompt/confirm 401, cross-origin prompt 403, text/plain body 415.
 - Browser: original floating prompt/response/confirmation layout tested with isolated mock data; cancel and interrupted-request prompt retention verified. Latest extension verified missing-time follow-up, history carryover, three linked creation previews, no mock confirm before approval, cancellation, successful confirmation with input restoration, and destructive warning/cascade count review. Temporary routes/tabs were deleted. Actual avatar-only showcase tested for normal/meta/omni selection and eye close-ups.
@@ -178,3 +181,14 @@ Preview artifacts: `docs/screenshots/isagi-states.png` (avatar states) and `docs
 - “Archive Biology” or “Delete Biology.” Both require Confirm; deletion discloses affected records and is permanent.
 
 No Google writes, account/security administration, or unrestricted database tool is exposed. Live Groq output, OAuth and PostgreSQL concurrency still require configured credentials/scratch database checks as described above; the local Groq key was not configured during this extension's verification.
+
+## Vercel creation-refusal fix
+
+The user reported the Vercel assistant saying it cannot create events because there are no existing events to move. The preceding move-only backend explicitly prohibited creation; the committed CRUD code supported creation but still contained the ambiguous instruction “You have NO write tools.” The user identified `https://flowstate-bay-zeta.vercel.app` as production. A public GET to its `/api/assistant` returned HTTP 405 with no capability marker, confirming this latest fix/version endpoint is not serving there. That response alone cannot distinguish the earlier CRUD revision from the older move-only revision.
+
+- Replaced that ambiguity with an explicit proposal/execution contract: the model emits operations; the server executes only after Confirm.
+- Explicitly permit creating the first class or event in an empty account and standalone events without class links. An earlier assistant refusal in history does not override current capabilities.
+- Retry once only for a narrow incorrect creation denial in an empty plan, within the original 25-second total timeout. A second such denial returns an actionable 502 and retains the user's input. Provider refusals, calendar blockers, Google-write denials and ordinary clarification do not trigger correction. Both attempts still pass the existing operation/ownership/conflict validation before proposal staging.
+- Added the public version endpoint above. Local GET returned `flowstate-crud-v2.1` with creation enabled. No live Groq/Google inference or database write was performed during verification.
+
+To roll out: commit/push the updated source through the project's existing Git/Vercel workflow, deploy that revision to Production, then open `{productionOrigin}/api/assistant`. It should show `flowstate-crud-v2.1` and `canCreateEvents: true`; an older response/405 means the fix is not serving at that origin. Reload FlowState after deployment to clear previous in-memory dialogue. Do not redeploy an old revision. No extra database migration or Groq key change is required for this fix. No commit/push/deployment was performed by this agent.
