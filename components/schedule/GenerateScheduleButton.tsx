@@ -1,14 +1,20 @@
 'use client'
 
 import { useState } from 'react'
+import dynamic from 'next/dynamic'
 import { usePathname, useRouter, useSearchParams } from 'next/navigation'
-import {
-  GenerateScheduleDialog,
-  type SerialEvent,
-  type SerialExam,
-  type SerialItem,
-  type SerialSubject,
+import type {
+  SerialEvent,
+  SerialExam,
+  SerialItem,
+  SerialSubject,
 } from './GenerateScheduleDialog'
+
+const loadPlanner = () => import('./GenerateScheduleDialog')
+const GenerateScheduleDialog = dynamic(
+  () => loadPlanner().then(module => module.GenerateScheduleDialog),
+  { ssr: false, loading: () => <span role="status" className="small text-secondary ms-2">Loading planner…</span> },
+)
 
 /**
  * Entry point to the planner.
@@ -39,6 +45,7 @@ export function GenerateScheduleButton({
   const router = useRouter()
   const pathname = usePathname()
   const [open, setOpen] = useState(() => searchParams.get('plan') === '1' && subjects.length > 0)
+  const [hasOpened, setHasOpened] = useState(open)
 
   function close() {
     setOpen(false)
@@ -56,7 +63,10 @@ export function GenerateScheduleButton({
       <button
         type="button"
         className={className}
-        onClick={() => setOpen(true)}
+        onClick={() => { setHasOpened(true); setOpen(true) }}
+        onPointerEnter={() => { if (!disabled) void loadPlanner().catch(() => {}) }}
+        onFocus={() => { if (!disabled) void loadPlanner().catch(() => {}) }}
+        aria-expanded={open}
         disabled={disabled}
         title={disabled ? 'Add a subject first' : 'Build a study plan from your priorities'}
       >
@@ -64,9 +74,8 @@ export function GenerateScheduleButton({
         {label}
       </button>
 
-      {/* Rendered unconditionally so the native dialog keeps its place in the
-          DOM across opens; the expensive part is inside and mounts on demand. */}
-      <GenerateScheduleDialog
+      {/* Download the planner on intent and keep its dialog mounted after first use. */}
+      {hasOpened && <GenerateScheduleDialog
         open={open}
         onClose={close}
         subjects={subjects}
@@ -74,7 +83,7 @@ export function GenerateScheduleButton({
         items={items}
         exams={exams}
         weekStartISO={weekStartISO}
-      />
+      />}
     </>
   )
 }

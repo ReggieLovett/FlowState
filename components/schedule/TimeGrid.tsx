@@ -2,6 +2,7 @@
 
 import {
   useEffect,
+  useMemo,
   useRef,
   useState,
   useSyncExternalStore,
@@ -57,6 +58,7 @@ const HOUR_PX = 48
 const PX_PER_MIN = HOUR_PX / 60
 const SNAP = 15
 const DAY_MIN = 24 * 60
+const EMPTY_DEADLINES: GridDeadline[] = []
 
 const TIME = new Intl.DateTimeFormat('en-GB', { hour: '2-digit', minute: '2-digit' })
 
@@ -147,7 +149,7 @@ export function TimeGrid({
   days,
   events,
   subjects,
-  deadlines = [],
+  deadlines = EMPTY_DEADLINES,
 }: {
   days: GridDay[]
   events: ScheduleEventDTO[]
@@ -164,6 +166,7 @@ export function TimeGrid({
   const scrollRef = useRef<HTMLDivElement>(null)
   const columnRefs = useRef<(HTMLDivElement | null)[]>([])
   const dragRef = useRef<DragState | null>(null)
+  const dragCleanupRef = useRef<(() => void) | null>(null)
   const suppressClick = useRef(false)
 
   const [preview, setPreview] = useState<{ id: string; dayIndex: number; start: number; end: number } | null>(null)
@@ -189,24 +192,31 @@ export function TimeGrid({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
+  useEffect(() => () => {
+    dragCleanupRef.current?.()
+    dragRef.current = null
+  }, [])
+
   // Apply optimistic moves until the server's copy catches up. An override
   // is ignored as soon as the event's server times differ from the times it
   // was made against, so there is nothing to clean up.
-  const effective = events.map((event) => {
+  const effective = useMemo(() => events.map((event) => {
     const o = overrides[event.id]
     return o && o.from === keyOf(event) ? { ...event, startsAt: o.startsAt, endsAt: o.endsAt } : event
-  })
+  }), [events, overrides])
 
-  const allDayByDay = days.map((day) =>
-    effective.filter((e) => {
-      if (!e.isAllDay) return false
-      return e.startsAt < dayDate(day.iso, DAY_MIN) && e.endsAt > dayDate(day.iso)
-    }),
-  )
+  // Pointer previews and the current-time marker do not change event geometry.
+  // Keep day boundaries and overlap partitioning out of those render paths.
+  const dayBounds = useMemo(() => days.map((day) => ({
+    start: dayDate(day.iso),
+    end: dayDate(day.iso, DAY_MIN),
+  })), [days])
 
-  const segmentsByDay = days.map((day) => {
-    const dayStart = dayDate(day.iso)
-    const dayEnd = dayDate(day.iso, DAY_MIN)
+  const allDayByDay = useMemo(() => dayBounds.map(({ start, end }) =>
+    effective.filter((event) => event.isAllDay && event.startsAt < end && event.endsAt > start),
+  ), [dayBounds, effective])
+
+  const segmentsByDay = useMemo(() => dayBounds.map(({ start: dayStart, end: dayEnd }) => {
     const items = effective
       .filter((e) => !e.isAllDay && e.startsAt < dayEnd && e.endsAt > dayStart)
       .map((event) => {
@@ -220,7 +230,27 @@ export function TimeGrid({
         }
       })
     return layoutDay(items)
-  })
+  }), [dayBounds, effective])
+
+  const segmentById = useMemo(() => {
+    const byId = new Map<string, Segment>()
+    for (const segments of segmentsByDay) {
+      for (const segment of segments) {
+        if (!byId.has(segment.event.id)) byId.set(segment.event.id, segment)
+      }
+    }
+    return byId
+  }, [segmentsByDay])
+
+  const deadlinesByDay = useMemo(() => {
+    const byDate = new Map<string, GridDeadline[]>()
+    for (const deadline of deadlines) {
+      const list = byDate.get(deadline.date)
+      if (list) list.push(deadline)
+      else byDate.set(deadline.date, [deadline])
+    }
+    return days.map((day) => byDate.get(day.iso) ?? EMPTY_DEADLINES)
+  }, [days, deadlines])
 
   function commit(event: ScheduleEventDTO, dayIndex: number, start: number, end: number) {
     const startsAt = dayDate(days[dayIndex].iso, start)
@@ -260,6 +290,7 @@ export function TimeGrid({
     const column = columnRefs.current[dayIndex]
     if (!column) return
     if (mode === 'resize') e.stopPropagation()
+    cancelDrag()
 
     dragRef.current = {
       id: segment.event.id,
@@ -283,22 +314,23 @@ export function TimeGrid({
     // happened to be over the preview, and a release anywhere else left the
     // drag stuck.
     const onMove = (ev: globalThis.PointerEvent) => moveDrag(ev)
-    const onUp = (ev: globalThis.PointerEvent) => {
-      detach()
-      endDrag(ev)
+    const onUp = (ev: globalThis.PointerEvent) => endDrag(ev)
+    const onCancel = (ev: globalThis.PointerEvent) => {
+      if (dragRef.current?.pointerId === ev.pointerId) cancelDrag()
     }
-    const onCancel = () => {
-      detach()
-      cancelDrag()
-    }
+    const onBlur = () => cancelDrag()
     const detach = () => {
       window.removeEventListener('pointermove', onMove)
       window.removeEventListener('pointerup', onUp)
       window.removeEventListener('pointercancel', onCancel)
+      window.removeEventListener('blur', onBlur)
+      if (dragCleanupRef.current === detach) dragCleanupRef.current = null
     }
+    dragCleanupRef.current = detach
     window.addEventListener('pointermove', onMove)
     window.addEventListener('pointerup', onUp)
     window.addEventListener('pointercancel', onCancel)
+    window.addEventListener('blur', onBlur)
   }
 
   function moveDrag(e: PointerPoint) {
@@ -308,6 +340,7 @@ export function TimeGrid({
     const dx = e.clientX - drag.originX
     const dy = e.clientY - drag.originY
     if (!drag.moved && Math.hypot(dx, dy) < 5) return
+    const alreadyMoved = drag.moved
     drag.moved = true
 
     const delta = Math.round(dy / PX_PER_MIN / SNAP) * SNAP
@@ -324,6 +357,7 @@ export function TimeGrid({
       next = { dayIndex: drag.dayIndex, start: drag.start, end }
     }
 
+    if (alreadyMoved && next.dayIndex === drag.preview.dayIndex && next.start === drag.preview.start && next.end === drag.preview.end) return
     drag.preview = next
     setPreview({ id: drag.id, ...next })
   }
@@ -331,6 +365,7 @@ export function TimeGrid({
   function endDrag(e: PointerPoint) {
     const drag = dragRef.current
     if (!drag || drag.pointerId !== e.pointerId) return
+    dragCleanupRef.current?.()
     dragRef.current = null
     setPreview(null)
     if (!drag.moved) return
@@ -341,6 +376,7 @@ export function TimeGrid({
   }
 
   function cancelDrag() {
+    dragCleanupRef.current?.()
     dragRef.current = null
     setPreview(null)
   }
@@ -453,7 +489,7 @@ export function TimeGrid({
     )
   }
 
-  const dragging = preview ? segmentsByDay.flat().find((s) => s.event.id === preview.id) : undefined
+  const dragging = preview ? segmentById.get(preview.id) : undefined
 
   return (
     <div className="card time-grid">
@@ -481,9 +517,7 @@ export function TimeGrid({
               <div className="tg-gutter tg-allday-label">All day</div>
               {allDayByDay.map((list, i) => (
                 <div key={days[i].iso} className="tg-allday-cell">
-                  {deadlines
-                    .filter((d) => d.date === days[i].iso)
-                    .map((d) => (
+                  {deadlinesByDay[i].map((d) => (
                       <Link
                         key={d.itemId}
                         href={`/dashboard/subjects#subject-${d.subjectId}`}

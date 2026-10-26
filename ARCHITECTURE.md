@@ -263,18 +263,20 @@ app/layout.tsx
   app/theme.css            <- token overrides + a handful of app classes
 ```
 
-`components/bootstrap/BootstrapClient.tsx` loads the JS bundle from an effect.
-It has to be deferred: the bundle touches `document` on import to register
-dropdowns and tooltips, so importing it at module scope in a Server Component
-crashes the render.
+Bootstrap CSS and icons remain, while the root no longer downloads the unused
+JavaScript bundle. Current dialogs, navigation and tooltips use React/native
+browser controls. The optional `BootstrapClient` helper remains available for a
+future component that genuinely needs Bootstrap JavaScript; it must load after
+hydration because the bundle accesses `document`.
 
 Two deliberate departures from stock Bootstrap:
 
 - **Dialogs are native `<dialog>`, not Bootstrap Modal.** `showModal()` gives
   focus trapping, Escape-to-close and the backdrop for free, and does not depend
   on the Bootstrap bundle having finished loading before a user can click.
-- **Mobile navigation is local state, not Offcanvas**, for the same reason, and
-  so it closes reliably on navigation.
+- **Mobile navigation uses a native `<dialog>` styled as the original drawer.**
+  It traps focus, dismisses with Escape/backdrop, returns focus to its trigger,
+  and closes on navigation or resizing to the desktop layout.
 
 Two Bootstrap defaults needed correcting, both recorded in `app/theme.css`:
 `.text-bg-light` is a fixed light chip that stays white in dark mode (replaced by

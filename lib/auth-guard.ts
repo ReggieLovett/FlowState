@@ -4,6 +4,9 @@ import { cache } from 'react'
 import { redirect } from 'next/navigation'
 import { auth } from '@/auth'
 
+/** Request-local only: layouts, pages and data guards share one session read. */
+export const getSession = cache(() => auth())
+
 /**
  * The single place a request is turned into a trusted user id.
  *
@@ -15,7 +18,7 @@ import { auth } from '@/auth'
  * resolves the session once per request.
  */
 export const requireUserId = cache(async (): Promise<string> => {
-  const session = await auth()
+  const session = await getSession()
 
   if (!session?.user?.id) {
     // A Server Component cannot return a 401, so send the visitor to sign in.
@@ -33,6 +36,6 @@ export const requireUserId = cache(async (): Promise<string> => {
  * proper 401.
  */
 export const getUserId = cache(async (): Promise<string | null> => {
-  const session = await auth()
+  const session = await getSession()
   return session?.user?.id ?? null
 })

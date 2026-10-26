@@ -1,9 +1,9 @@
 import type { Metadata } from 'next'
 import Link from 'next/link'
-import { auth } from '@/auth'
+import { getSession } from '@/lib/auth-guard'
 import { getDashboardSummary, listEventsInRange } from '@/lib/data/schedule'
 import { listSubjects } from '@/lib/data/subjects'
-import { listItems } from '@/lib/data/items'
+import { listItemDeadlines } from '@/lib/data/items'
 import { ITEM_LABELS } from '@/lib/scheduling'
 import { getLook, getProgress } from '@/lib/data/progress'
 import { CATEGORY_META, CATEGORY_ORDER } from '@/lib/categories'
@@ -22,7 +22,7 @@ export const metadata: Metadata = { title: 'Overview' }
 export const dynamic = 'force-dynamic'
 
 export default async function DashboardPage() {
-  const session = await auth()
+  const session = await getSession()
   const userName = session?.user?.name?.split(' ')[0] ?? null
   const now = new Date()
   const todayStart = new Date(now)
@@ -31,6 +31,7 @@ export default async function DashboardPage() {
 
   const weekStart = startOfWeek(now)
   const weekEnd = addDays(weekStart, 7)
+  const horizon = addDays(todayStart, 15)
 
   // User-scoped reads. None takes a userId; each derives it from the session
   // inside the data layer. Progress and look are cached per request, so the
@@ -41,7 +42,7 @@ export default async function DashboardPage() {
     listSubjects({ includeArchived: true }),
     getProgress(),
     getLook(),
-    listItems({ status: 'TODO' }),
+    listItemDeadlines(horizon),
   ])
 
   const activeSubjects = subjects.filter((s) => !s.archivedAt)
@@ -50,7 +51,6 @@ export default async function DashboardPage() {
   // Exams from subjects, open subject items, and deadline events, next two
   // weeks, one list. Item due dates are date-only values at UTC midnight, so
   // they are read back as that calendar day in local time.
-  const horizon = addDays(todayStart, 15)
   const subjectById = new Map(activeSubjects.map((s) => [s.id, s]))
   const upcoming = [
     ...openItems

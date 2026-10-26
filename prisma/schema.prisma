@@ -44,9 +44,10 @@ model User {
   accounts Account[]
   sessions Session[]
 
-  subjects Subject[]
-  items    SubjectItem[]
-  events   ScheduleEvent[]
+  subjects           Subject[]
+  items              SubjectItem[]
+  events             ScheduleEvent[]
+  assistantProposals AssistantProposal[]
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -284,6 +285,42 @@ model ScheduleEvent {
   // Serves "the blocks the scheduler made in this window", which every
   // regenerate and every clear has to answer before it writes.
   @@index([userId, generatedAt])
+}
+
+// ---------------------------------------------------------------------------
+// Assistant proposals
+// ---------------------------------------------------------------------------
+
+enum AssistantProposalStatus {
+  PENDING
+  APPLIED
+  CANCELLED
+}
+
+/// The assistant can only stage immutable moves. An authenticated, explicit
+/// confirmation applies those moves and advances status in one transaction.
+/// The migration also protects the snapshot columns against later mutation.
+model AssistantProposal {
+  id     String @id @default(cuid())
+  userId String
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  status      AssistantProposalStatus @default(PENDING)
+  message     String                  @db.Text
+  /// Server-derived original times/title, proposed times and short reasons.
+  changes     Json
+  /// Versioned source row snapshots, including updatedAt and calendar state.
+  snapshot    Json
+  timeZone    String
+  windowStart DateTime
+  windowEnd   DateTime
+  expiresAt   DateTime
+  appliedAt   DateTime?
+  createdAt   DateTime                @default(now())
+  updatedAt   DateTime                @updatedAt
+
+  @@unique([id, userId])
+  @@index([userId, status, expiresAt])
 }
 
 // ---------------------------------------------------------------------------

@@ -45,9 +45,9 @@ export function contentSecurityPolicy(nonce: string, options: { https: boolean }
     // Stops an injected <base href> from redirecting every relative URL.
     'base-uri': ["'self'"],
     // Forms may only post back here. GitHub is listed because Chrome applies
-    // form-action to the redirect that follows a submission, and "Continue with
-    // GitHub" is a form whose response redirects to github.com.
-    'form-action': ["'self'", 'https://github.com'],
+    // form-action to the redirect that follows a submission. GitHub sign-in
+    // and the Google Calendar connection both use forms and OAuth redirects.
+    'form-action': ["'self'", 'https://github.com', 'https://accounts.google.com'],
     // The app is never meant to be framed. Replaces X-Frame-Options, which is
     // still sent from next.config.js for browsers that predate this.
     'frame-ancestors': ["'none'"],

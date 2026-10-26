@@ -30,6 +30,16 @@ const subjectSelect = {
 
 export type SubjectDTO = Prisma.SubjectGetPayload<{ select: typeof subjectSelect }>
 
+/** The schedule never renders notes, archived data or lifetime relation counts. */
+export async function listSchedulingSubjects() {
+  const userId = await requireUserId()
+  return prisma.subject.findMany({
+    where: { userId, archivedAt: null },
+    select: { id: true, name: true, category: true, colorHex: true, difficulty: true, examDate: true },
+    orderBy: [{ category: 'asc' }, { name: 'asc' }],
+  })
+}
+
 export async function listSubjects(
   options: { includeArchived?: boolean } = {},
 ): Promise<SubjectDTO[]> {

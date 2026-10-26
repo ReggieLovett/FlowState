@@ -1,5 +1,6 @@
 import NextAuth, { CredentialsSignin } from 'next-auth'
 import Credentials from 'next-auth/providers/credentials'
+import Google from 'next-auth/providers/google'
 import { PrismaAdapter } from '@auth/prisma-adapter'
 import type { PrismaClient } from '@prisma/client'
 import bcrypt from 'bcryptjs'
@@ -56,6 +57,24 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
   providers: [
     ...authConfig.providers,
 
+    // Calendar authorization is requested only from Settings. Keep this out of
+    // the proxy configuration so it never carries provider secrets or tokens.
+    ...(process.env.AUTH_GOOGLE_ID && process.env.AUTH_GOOGLE_SECRET
+      ? [Google({
+          clientId: process.env.AUTH_GOOGLE_ID,
+          clientSecret: process.env.AUTH_GOOGLE_SECRET,
+          allowDangerousEmailAccountLinking: false,
+          authorization: {
+            params: {
+              scope: 'openid email profile https://www.googleapis.com/auth/calendar.events.readonly',
+              access_type: 'offline',
+              prompt: 'consent',
+              include_granted_scopes: 'true',
+            },
+          },
+        })]
+      : []),
+
     Credentials({
       credentials: {
         email: { label: 'Email', type: 'email' },
@@ -108,6 +127,31 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
       },
     }),
   ],
+
+  events: {
+    async signIn({ user, account }) {
+      if (account?.provider !== 'google' || !user.id) return
+
+      // The adapter links a new account safely to the signed-in user, but does
+      // not update OAuth tokens on a later sign-in. Persist reconnects here,
+      // after Auth.js has resolved and verified the actual account owner.
+      // Google may omit a refresh token; preserve the existing one in that case.
+      await prisma.account.updateMany({
+        where: {
+          userId: user.id,
+          provider: 'google',
+          providerAccountId: account.providerAccountId,
+        },
+        data: {
+          ...(account.access_token ? { access_token: account.access_token } : {}),
+          ...(account.refresh_token ? { refresh_token: account.refresh_token } : {}),
+          ...(typeof account.expires_at === 'number' ? { expires_at: account.expires_at } : {}),
+          ...(account.scope ? { scope: account.scope } : {}),
+          ...(account.token_type ? { token_type: account.token_type } : {}),
+        },
+      })
+    },
+  },
 
 })
 

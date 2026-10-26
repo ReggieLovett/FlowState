@@ -1,15 +1,20 @@
 import type { Metadata } from 'next'
-import { auth } from '@/auth'
+import { getSession } from '@/lib/auth-guard'
 import { listSubjects } from '@/lib/data/subjects'
 import { signOutAction } from '@/lib/actions/auth'
 import { CATEGORY_META, CATEGORY_ORDER } from '@/lib/categories'
+import { googleCalendarStatus } from '@/lib/assistant/google-calendar'
+import { GoogleCalendarConnect } from '@/components/dashboard/GoogleCalendarConnect'
 
 export const metadata: Metadata = { title: 'Settings' }
 export const dynamic = 'force-dynamic'
 
 export default async function SettingsPage() {
-  const session = await auth()
-  const subjects = await listSubjects({ includeArchived: true })
+  const [session, subjects] = await Promise.all([
+    getSession(),
+    listSubjects({ includeArchived: true }),
+  ])
+  const calendar = session?.user?.id ? await googleCalendarStatus(session.user.id) : null
 
   return (
     <>
@@ -76,6 +81,39 @@ export default async function SettingsPage() {
                   )
                 })}
               </ul>
+            </div>
+          </div>
+        </div>
+
+        <div className="col-12">
+          <div className="card">
+            <div className="card-header bg-transparent d-flex align-items-center justify-content-between gap-3">
+              <h2 className="h6 fw-semibold mb-0">Google Calendar</h2>
+              <span className="badge text-bg-secondary fw-normal">
+                {!calendar?.configured ? 'Not configured' : calendar.multipleAccounts ? 'Needs attention' : calendar.needsReconnect ? 'Reconnect needed' : calendar.connected ? 'Connected' : 'Not connected'}
+              </span>
+            </div>
+            <div className="card-body">
+              <p className="text-secondary small mb-3">
+                {calendar?.connected
+                  ? 'Your assistant checks your primary Google Calendar for busy time before proposing changes to your FlowState schedule.'
+                  : 'Connect your primary calendar so your assistant can plan around classes, meetings, and other commitments.'}
+                {' '}Google events stay read-only. You approve changes to your FlowState schedule before they are applied.
+              </p>
+              {calendar?.multipleAccounts ? (
+                <p className="text-warning-emphasis small mb-3" role="status">
+                  More than one Google account is linked. Ask your administrator to keep one connection; calendar planning stays paused until then.
+                </p>
+              ) : calendar?.needsReconnect ? (
+                <p className="text-warning-emphasis small mb-3" role="status">
+                  Reconnect and allow read-only event access so your assistant can keep checking your calendar.
+                </p>
+              ) : null}
+              {calendar?.configured ? (
+                <GoogleCalendarConnect connected={calendar.connected} />
+              ) : (
+                <p className="text-secondary small mb-0">Google Calendar is awaiting setup by the app owner.</p>
+              )}
             </div>
           </div>
         </div>

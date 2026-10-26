@@ -1,0 +1,22 @@
+.showcase { max-width: 960px; margin: 0 auto; }
+.grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 14px; }
+.card { display: flex; flex-direction: column; align-items: center; min-width: 0; padding: 14px 10px 18px; border: 1px solid #364151; border-radius: 18px; background: #1b2028; color: #f1f5f9; font: inherit; cursor: pointer; overflow: hidden; }
+.card[aria-pressed='true'] { border-color: #a3edcf; background: #202b30; }
+.card:focus-visible { outline: 2px solid #a3edcf; outline-offset: 4px; }
+.card strong { margin-top: 8px; font-size: 14px; }
+.card > span:last-child { margin-top: 4px; color: #a6b2c2; font-size: 11px; line-height: 1.5; text-align: center; }
+.figure { display: grid; width: 100%; height: 152px; place-items: center; }
+.walking { animation: stroll 4s linear infinite; }
+.inspector { display: flex; align-items: center; justify-content: space-between; gap: 24px; margin-top: 18px; padding: 24px; border: 1px solid #364151; border-radius: 18px; background: #171b22; }
+.inspector h2 { margin: 5px 0 10px; font-size: 24px; letter-spacing: -0.035em; }
+.inspector p { max-width: 30rem; margin-bottom: 0; color: #a6b2c2; font-size: 13px; line-height: 1.6; }
+.inspector .kicker { color: #a3edcf; font-size: 10px; letter-spacing: 0.12em; }
+.closeup { position: relative; flex-shrink: 0; width: 150px; height: 110px; overflow: hidden; border: 1px solid #364151; border-radius: 20px; background: #202630; }
+.closeup > span { position: absolute; top: -20px; left: -39px; transform: scale(2); transform-origin: top left; }
+.closeup > span { width: 114px; height: 146px; }
+.closeup svg { width: 114px; height: 146px; }
+.note { max-width: 40rem; margin: 18px 0 0; color: #a6b2c2; font-size: 12px; line-height: 1.6; }
+@keyframes stroll { 0% { transform: translateX(-18px); } 49% { transform: translateX(18px); } 50% { transform: translateX(18px) scaleX(-1); } 99% { transform: translateX(-18px) scaleX(-1); } 100% { transform: translateX(-18px); } }
+@media (max-width: 700px) { .grid { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; } .figure { height: 118px; } .card { padding-top: 8px; padding-bottom: 12px; } .inspector { padding: 18px; gap: 14px; } .closeup { width: 122px; } .closeup > span { left: -52px; } }
+@media (max-width: 380px) { .inspector { flex-direction: column-reverse; align-items: start; } }
+@media (prefers-reduced-motion: reduce) { .walking { animation: none; } }

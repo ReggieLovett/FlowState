@@ -60,6 +60,62 @@ export async function listItems(
   })
 }
 
+/** Dashboard preview: fetch six deadlines without loading each item's history. */
+export async function listItemDeadlines(before: Date) {
+  const userId = await requireUserId()
+  return prisma.subjectItem.findMany({
+    where: {
+      userId,
+      status: 'TODO',
+      dueDate: { lt: before },
+      subject: { archivedAt: null },
+    },
+    select: { id: true, subjectId: true, title: true, type: true, dueDate: true },
+    orderBy: itemOrder,
+    take: 6,
+  })
+}
+
+/**
+ * Planner inputs and the visible calendar's deadline row. Finished exams still
+ * constrain study dates. Other finished/archived work is needed only when its
+ * deadline is visible, and its session history never feeds the planner.
+ *
+ * Date-only bounds are UTC midnights for the calendar dates being displayed.
+ */
+export async function listSchedulingItems(deadlineFrom: Date, deadlineTo: Date) {
+  const userId = await requireUserId()
+  return prisma.subjectItem.findMany({
+    where: {
+      userId,
+      OR: [
+        { status: 'TODO', subject: { archivedAt: null } },
+        { type: 'EXAM', dueDate: { not: null }, subject: { archivedAt: null } },
+        { dueDate: { gte: deadlineFrom, lt: deadlineTo } },
+      ],
+    },
+    select: {
+      id: true,
+      subjectId: true,
+      title: true,
+      type: true,
+      status: true,
+      dueDate: true,
+      estimatedMinutes: true,
+      priority: true,
+      events: {
+        where: {
+          userId,
+          status: { not: 'CANCELLED' },
+          item: { status: 'TODO', subject: { archivedAt: null } },
+        },
+        select: { startsAt: true, endsAt: true },
+      },
+    },
+    orderBy: itemOrder,
+  })
+}
+
 export interface ItemInput {
   subjectId: string
   title: string

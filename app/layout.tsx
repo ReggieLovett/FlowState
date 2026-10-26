@@ -1,7 +1,6 @@
 import type { Metadata, Viewport } from 'next'
 import { Inter, Press_Start_2P } from 'next/font/google'
 import { headers } from 'next/headers'
-import { BootstrapClient } from '@/components/bootstrap/BootstrapClient'
 import { ThemeScript } from '@/components/bootstrap/ThemeScript'
 
 // Bootstrap first, so the theme layer can override its custom properties.
@@ -63,7 +62,6 @@ export default async function RootLayout({ children }: { children: React.ReactNo
           Skip to content
         </a>
         {children}
-        <BootstrapClient />
       </body>
     </html>
   )

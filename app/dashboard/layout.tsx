@@ -1,6 +1,6 @@
 import Link from 'next/link'
 import { redirect } from 'next/navigation'
-import { auth } from '@/auth'
+import { getSession } from '@/lib/auth-guard'
 import { MobileNav } from '@/components/dashboard/MobileNav'
 import { SidebarNav } from '@/components/dashboard/SidebarNav'
 import { UserMenu } from '@/components/dashboard/UserMenu'
@@ -8,6 +8,7 @@ import { ThemeToggle } from '@/components/bootstrap/ThemeToggle'
 import { LevelPill } from '@/components/rewards/LevelPill'
 import { RewardToaster } from '@/components/rewards/RewardToaster'
 import { getLook, getProgress } from '@/lib/data/progress'
+import AssistantLoader from '@/components/assistant/AssistantLoader'
 
 /**
  * Shell for every signed-in screen.
@@ -21,14 +22,14 @@ export default async function DashboardLayout({
 }: {
   children: React.ReactNode
 }) {
-  const session = await auth()
+  const session = await getSession()
   if (!session?.user?.id) redirect('/login')
 
   // Cached per request, so a page that also shows progress does not re-query.
   const [progress, look] = await Promise.all([getProgress(), getLook()])
 
   return (
-    <div className="d-lg-flex" data-season={look.season.id}>
+    <div className="dashboard-shell d-lg-flex" data-season={look.season.id}>
       <aside
         className="app-sidebar d-none d-lg-flex flex-column p-3 flex-shrink-0"
         style={{ width: '15.5rem' }}
@@ -74,6 +75,7 @@ export default async function DashboardLayout({
           {children}
         </main>
         <RewardToaster />
+        <AssistantLoader />
       </div>
     </div>
   )

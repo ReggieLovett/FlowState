@@ -54,6 +54,7 @@ that is enforced, and `npm run db:verify` for the proof.
 | `npm start`          | Serve the production build                                 |
 | `npm run lint`       | ESLint                                                     |
 | `npm run typecheck`  | TypeScript, no emit                                        |
+| `npm test`           | Assistant, Calendar, proposal lifecycle and date-range regression tests |
 | `npm run db:migrate` | Create and apply a migration in development                |
 | `npm run db:deploy`  | Apply pending migrations (use in deployment)               |
 | `npm run db:studio`  | Browse the database                                        |
@@ -227,3 +228,41 @@ The automatic scheduling engine from `legacy-tailwind/` now lives in
 scoring weights are unchanged. The exam-proximity curve was corrected so that
 it only falls as an exam moves further away; previously a subject with no exam
 outranked one with an exam three weeks out.
+
+## Isagi scheduling assistant
+
+The assistant floats beside your dashboard: type a prompt, read Isagi's reply,
+and review each proposed move in the dialogue bubble. Confirm applies the stored
+plan; Cancel leaves scheduled events untouched. Idle, walking, meta vision eyes and white/glowing omni vision have distinct
+animation states. Drag the avatar or use its keyboard/docking controls.
+
+1. Add `GROQ_API_KEY` to your server environment. The model is
+   `openai/gpt-oss-120b`; the browser never receives the key.
+2. Apply the checked-in assistant migration with `npm run db:deploy` against
+   your intended database, then run `npx prisma generate` and restart the app.
+3. For Calendar context, configure `AUTH_GOOGLE_ID` / `AUTH_GOOGLE_SECRET`,
+   enable Google Calendar API in Google Cloud, and register
+   `{origin}/api/auth/callback/google` as the web OAuth callback.
+4. While signed into FlowState, connect Google Calendar in Settings. The
+   assistant reads busy events from your primary calendar. Google events stay
+   read-only; confirmed changes move FlowState events.
+
+The assistant uses a bounded future window and requires a new proposal if the
+calendar changed, a proposal expired, or a provider returned incomplete data.
+No live database migration is run by `npm run build`.
+
+See [HANDOFF.md](HANDOFF.md) for the API contract, implementation map, setup,
+verification, limits, and recovery instructions if a session or connection ends.
+
+
+### Performance and appearance
+
+FlowState keeps its existing palette, typography, page layout and pixel rewards.
+The calendar now reuses layout calculations while dragging, skips unchanged
+snapped positions, and cleans up gesture listeners. Historical browsing reads
+only the visible week and a bounded future planning window. The schedule page
+uses smaller data projections, and the large planner loads on demand. Minor
+polish improves card corners, keyboard focus and the original mobile drawer.
+
+Open `/assistant-demo` for the isolated Isagi idle/walking/meta/omni preview and
+eye close-ups. The demo makes no AI calls and reads no account/calendar data.

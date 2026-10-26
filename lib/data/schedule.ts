@@ -194,7 +194,7 @@ export async function deleteEvent(eventId: string): Promise<boolean> {
 export async function getDashboardSummary(from: Date, to: Date) {
   const userId = await requireUserId()
 
-  const [byCategory, upcomingDeadlines, totalEvents] = await Promise.all([
+  const [byCategory, upcomingDeadlines] = await Promise.all([
     prisma.scheduleEvent.groupBy({
       by: ['category'],
       where: { userId, startsAt: { gte: from, lt: to } },
@@ -211,11 +211,10 @@ export async function getDashboardSummary(from: Date, to: Date) {
       orderBy: { startsAt: 'asc' },
       take: 5,
     }),
-    prisma.scheduleEvent.count({
-      where: { userId, startsAt: { gte: from, lt: to } },
-    }),
   ])
 
+  // The grouped counts already contain the total; avoid a third database trip.
+  const totalEvents = byCategory.reduce((total, row) => total + row._count._all, 0)
   return { byCategory, upcomingDeadlines, totalEvents }
 }
 

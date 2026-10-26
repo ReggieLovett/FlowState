@@ -1,8 +1,15 @@
 import type { Metadata } from 'next'
 import Link from 'next/link'
 import { listEventsInRange } from '@/lib/data/schedule'
-import { listSubjects } from '@/lib/data/subjects'
-import { listItems } from '@/lib/data/items'
+import { listSchedulingSubjects } from '@/lib/data/subjects'
+import { listSchedulingItems } from '@/lib/data/items'
+import {
+  MAX_SCHEDULE_DAY_OFFSET,
+  MAX_SCHEDULE_WEEK_OFFSET,
+  boundedScheduleOffset,
+  mergeScheduleEvents,
+  scheduleReadRanges,
+} from '@/lib/schedule-range'
 import { EventList } from '@/components/schedule/EventList'
 import { NewEventButton } from '@/components/schedule/NewEventButton'
 import { GenerateScheduleButton } from '@/components/schedule/GenerateScheduleButton'
@@ -20,9 +27,6 @@ import {
 export const metadata: Metadata = { title: 'Schedule' }
 export const dynamic = 'force-dynamic'
 
-/** Longest range the planner offers, in days from its first plannable day. */
-const PLANNER_HORIZON_DAYS = 28
-
 type View = 'week' | 'day' | 'list'
 
 const VIEWS: { id: View; label: string; icon: string }[] = [
@@ -37,8 +41,8 @@ const WEEKDAY = new Intl.DateTimeFormat('en-GB', { weekday: 'short' })
  * The schedule as an hour-by-hour week, a single day, or the day-by-day list.
  *
  * `?week=` and `?day=` are integer offsets from the current week and today
- * rather than dates, so the values cannot be used to probe arbitrary ranges
- * and there is nothing to validate beyond "is it a number".
+ * rather than dates. Offsets are bounded to ten years in either direction so
+ * malformed or enormous values cannot overflow the dates used below.
  */
 export default async function SchedulePage({
   searchParams,
@@ -47,7 +51,7 @@ export default async function SchedulePage({
 }) {
   const params = await searchParams
   const view: View = params.view === 'day' || params.view === 'list' ? params.view : 'week'
-  const dayOffset = Number.parseInt(params.day ?? '0', 10) || 0
+  const dayOffset = boundedScheduleOffset(params.day, MAX_SCHEDULE_DAY_OFFSET)
 
   const now = new Date()
   const todayStart = new Date(now)
@@ -58,23 +62,24 @@ export default async function SchedulePage({
   const offset =
     view === 'day'
       ? Math.round((startOfWeek(selectedDay).getTime() - startOfWeek(now).getTime()) / (7 * 86_400_000))
-      : Number.parseInt(params.week ?? '0', 10) || 0
+      : boundedScheduleOffset(params.week, MAX_SCHEDULE_WEEK_OFFSET)
 
   const weekStart = addDays(startOfWeek(now), offset * 7)
   const weekEnd = addDays(weekStart, 7)
 
-  // The planner offers ranges up to four weeks, and it can only avoid a clash it
-  // can see. Reading the whole horizon in one query costs the same index scan as
-  // reading the visible week, so the week view slices this rather than
-  // re-querying.
-  const planStart = weekStart > todayStart ? weekStart : todayStart
-  const horizonEnd = addDays(planStart, PLANNER_HORIZON_DAYS)
-
-  const [horizonEvents, subjects, allItems] = await Promise.all([
-    listEventsInRange(weekStart, horizonEnd),
-    listSubjects(),
-    listItems(),
+  // Historical browsing must not load every intervening year just to give the
+  // planner its four-week future context. Disjoint windows read in parallel.
+  const ranges = scheduleReadRanges(weekStart, todayStart)
+  const visibleStart = view === 'day' ? selectedDay : weekStart
+  const visibleEnd = view === 'day' ? addDays(selectedDay, 1) : weekEnd
+  const deadlineFrom = new Date(`${toDateInput(visibleStart)}T00:00:00Z`)
+  const deadlineTo = new Date(`${toDateInput(visibleEnd)}T00:00:00Z`)
+  const [eventGroups, subjects, allItems] = await Promise.all([
+    Promise.all(ranges.map(({ from, to }) => listEventsInRange(from, to))),
+    listSchedulingSubjects(),
+    listSchedulingItems(deadlineFrom, deadlineTo),
   ])
+  const horizonEvents = mergeScheduleEvents(eventGroups)
 
   const events = horizonEvents.filter(
     (event) => event.startsAt < weekEnd && event.endsAt > weekStart,

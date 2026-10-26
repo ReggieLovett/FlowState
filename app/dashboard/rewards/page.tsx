@@ -1,5 +1,5 @@
 import type { Metadata } from 'next'
-import { auth } from '@/auth'
+import { getSession } from '@/lib/auth-guard'
 import { getLook, getProgress } from '@/lib/data/progress'
 import { chooseAvatarAction, chooseSeasonAction } from '@/lib/actions/rewards'
 import { ActionForm } from '@/components/feedback/ActionForm'
@@ -17,7 +17,7 @@ export const dynamic = 'force-dynamic'
  * re-checked on the server, so nothing here depends on client state.
  */
 export default async function RewardsPage() {
-  const session = await auth()
+  const session = await getSession()
   const [progress, look] = await Promise.all([getProgress(), getLook()])
   const achievements = evaluateAchievements(progress)
   const earned = achievements.filter((a) => a.unlocked).length
